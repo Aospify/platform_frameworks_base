@@ -110,4 +110,13 @@ interface IStatusBarService
     void onBiometricError(String error);
     // Used to hide the biometric dialog when the AuthenticationClient is stopped
     void hideBiometricDialog();
+
+	/**
+	 * Custom methods
+	 */
+	 
+    // Used to show or hide in display fingerprint view
+    void showInDisplayFingerprintView();
+    void hideInDisplayFingerprintView();
+
 }
