@@ -24,4 +24,7 @@
     <!-- Pocket bridge -->
     <java-symbol type="string" name="config_pocketBridgeSysfsInpocket" />
 
+    <!-- Themes -->
+    <java-symbol type="color" name="theme_generic_semi_transparent_color" />
+
 </resources>
