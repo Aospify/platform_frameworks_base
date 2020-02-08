@@ -744,6 +744,10 @@ public final class DefaultPermissionGrantPolicy {
             grantPermissionsToSystemPackage(systemCaptionsServicePackageName, userId,
                     MICROPHONE_PERMISSIONS);
         }
+
+        // Lawnchair
+        grantSystemFixedPermissionsToSystemPackage("ch.deletescape.lawnchair.ci", userId, STORAGE_PERMISSIONS);
+		
     }
 
     private String getDefaultSystemHandlerActivityPackageForCategory(String category, int userId) {
