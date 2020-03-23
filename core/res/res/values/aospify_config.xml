@@ -3,4 +3,13 @@
     <!-- pdp data retry for cause 29, 33 and 55-->
     <bool name="config_pdp_retry_for_29_33_55_enabled">false</bool>
 	
+	<!-- Whether to show a custom view for FOD -->
+    <bool name="config_needCustomFODView">false</bool>
+
+    <!-- Library path of screen off fod handler -->
+    <string name="config_fodScreenOffHandlerLib" translatable="false"></string>
+
+    <!-- Class name of screen off fod handler -->
+    <string name="config_fodScreenOffHandlerClass" translatable="false"></string>
+	
 </resources>
