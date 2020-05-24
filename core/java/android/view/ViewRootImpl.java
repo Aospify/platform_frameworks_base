@@ -1129,9 +1129,15 @@ public final class ViewRootImpl implements ViewParent,
      *
      * @param callback The callback to register.
      */
-    public void registerRtFrameCallback(FrameDrawingCallback callback) {
+    public void registerRtFrameCallback(@NonNull FrameDrawingCallback callback) {
         if (mAttachInfo.mThreadedRenderer != null) {
-            mAttachInfo.mThreadedRenderer.registerRtFrameCallback(callback);
+            mAttachInfo.mThreadedRenderer.registerRtFrameCallback(frame -> {
+                try {
+                    callback.onFrameDraw(frame);
+                } catch (Exception e) {
+                    Log.e(TAG, "Exception while executing onFrameDraw", e);
+                }
+            });
         }
     }
 
@@ -1631,7 +1637,7 @@ public final class ViewRootImpl implements ViewParent,
         mSurfaceSession = null;
 
         if (mBoundsSurfaceControl != null) {
-            mBoundsSurfaceControl.remove();
+            mTransaction.remove(mBoundsSurfaceControl).apply();
             mBoundsSurface.release();
             mBoundsSurfaceControl = null;
         }

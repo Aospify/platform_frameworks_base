@@ -93,6 +93,7 @@ public class SettingsBackupTest {
                     Settings.System.VOLUME_VOICE, // deprecated since API 2?
                     Settings.System.WHEN_TO_MAKE_WIFI_CALLS, // bug?
                     Settings.System.WINDOW_ORIENTATION_LISTENER_LOG, // used for debugging only
+                    Settings.System.MIN_REFRESH_RATE, // depends on hardware capabilities
                     Settings.System.PEAK_REFRESH_RATE // depends on hardware capabilities
                     );
 
@@ -263,6 +264,7 @@ public class SettingsBackupTest {
                     Settings.Global.ERROR_LOGCAT_PREFIX,
                     Settings.Global.EUICC_PROVISIONED,
                     Settings.Global.EUICC_SUPPORTED_COUNTRIES,
+                    Settings.Global.EUICC_UNSUPPORTED_COUNTRIES,
                     Settings.Global.EUICC_FACTORY_RESET_TIMEOUT_MILLIS,
                     Settings.Global.EUICC_REMOVING_INVISIBLE_PROFILES_TIMEOUT_MILLIS,
                     Settings.Global.FANCY_IME_ANIMATIONS,
@@ -594,7 +596,10 @@ public class SettingsBackupTest {
                  Settings.Secure.ANR_SHOW_BACKGROUND,
                  Settings.Secure.ASSISTANT,
                  Settings.Secure.ASSIST_DISCLOSURE_ENABLED,
+                 Settings.Secure.ASSIST_GESTURE_ENABLED,
                  Settings.Secure.ASSIST_GESTURE_SENSITIVITY,
+                 Settings.Secure.ASSIST_GESTURE_WAKE_ENABLED,
+                 Settings.Secure.ASSIST_GESTURE_SILENCE_ALERTS_ENABLED,
                  Settings.Secure.ASSIST_GESTURE_SETUP_COMPLETE,
                  Settings.Secure.ASSIST_SCREENSHOT_ENABLED,
                  Settings.Secure.ASSIST_STRUCTURE_ENABLED,
@@ -715,13 +720,21 @@ public class SettingsBackupTest {
                  Settings.Secure.PACKAGES_TO_CLEAR_DATA_BEFORE_FULL_RESTORE,
                  Settings.Secure.FLASHLIGHT_AVAILABLE,
                  Settings.Secure.FLASHLIGHT_ENABLED,
+                 Settings.Secure.MANAGED_PROVISIONING_DPC_DOWNLOADED,
                  Settings.Secure.CROSS_PROFILE_CALENDAR_ENABLED,
                  Settings.Secure.LOCATION_ACCESS_CHECK_INTERVAL_MILLIS,
                  Settings.Secure.LOCATION_ACCESS_CHECK_DELAY_MILLIS,
                  Settings.Secure.BIOMETRIC_DEBUG_ENABLED,
                  Settings.Secure.FACE_UNLOCK_ATTENTION_REQUIRED,
                  Settings.Secure.FACE_UNLOCK_DIVERSITY_REQUIRED,
-                 Settings.Secure.FACE_UNLOCK_EDUCATION_INFO_DISPLAYED);
+                 Settings.Secure.AWARE_ENABLED,
+                 Settings.Secure.SKIP_GESTURE,
+                 Settings.Secure.SILENCE_GESTURE,
+                 Settings.Secure.DOZE_WAKE_LOCK_SCREEN_GESTURE,
+                 Settings.Secure.DOZE_WAKE_DISPLAY_GESTURE,
+                 Settings.Secure.TAP_GESTURE,
+                 Settings.Secure.NEARBY_SHARING_COMPONENT, // not user configurable
+                 Settings.Secure.FACE_UNLOCK_RE_ENROLL);
 
     @Test
     public void systemSettingsBackedUpOrBlacklisted() {

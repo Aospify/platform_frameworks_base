@@ -16,8 +16,12 @@
 
 package com.android.server;
 
+import static android.Manifest.permission.CHANGE_NETWORK_STATE;
+import static android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS;
+import static android.content.pm.PackageInfo.REQUESTED_PERMISSION_GRANTED;
 import static android.content.pm.PackageManager.GET_PERMISSIONS;
 import static android.content.pm.PackageManager.MATCH_ANY_USER;
+import static android.net.ConnectivityManager.ACTION_CAPTIVE_PORTAL_SIGN_IN;
 import static android.net.ConnectivityManager.CONNECTIVITY_ACTION;
 import static android.net.ConnectivityManager.NETID_UNSET;
 import static android.net.ConnectivityManager.PRIVATE_DNS_MODE_OFF;
@@ -80,13 +84,13 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Matchers.anyInt;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
-import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -141,6 +145,7 @@ import android.net.NetworkInfo.DetailedState;
 import android.net.NetworkMisc;
 import android.net.NetworkRequest;
 import android.net.NetworkSpecifier;
+import android.net.NetworkStack;
 import android.net.NetworkStackClient;
 import android.net.NetworkState;
 import android.net.NetworkUtils;
@@ -154,6 +159,7 @@ import android.net.shared.NetworkMonitorUtils;
 import android.net.shared.PrivateDnsConfig;
 import android.net.util.MultinetworkPolicyTracker;
 import android.os.Binder;
+import android.os.Bundle;
 import android.os.ConditionVariable;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -191,6 +197,7 @@ import com.android.server.connectivity.DefaultNetworkMetrics;
 import com.android.server.connectivity.IpConnectivityMetrics;
 import com.android.server.connectivity.MockableSystemProperties;
 import com.android.server.connectivity.Nat464Xlat;
+import com.android.server.connectivity.NetworkNotificationManager.NotificationType;
 import com.android.server.connectivity.ProxyTracker;
 import com.android.server.connectivity.Tethering;
 import com.android.server.connectivity.Vpn;
@@ -283,6 +290,7 @@ public class ConnectivityServiceTest {
     @Mock NetworkStackClient mNetworkStack;
     @Mock PackageManager mPackageManager;
     @Mock UserManager mUserManager;
+    @Mock NotificationManager mNotificationManager;
 
     private ArgumentCaptor<ResolverParamsParcel> mResolverParamsParcelCaptor =
             ArgumentCaptor.forClass(ResolverParamsParcel.class);
@@ -352,7 +360,7 @@ public class ConnectivityServiceTest {
         @Override
         public Object getSystemService(String name) {
             if (Context.CONNECTIVITY_SERVICE.equals(name)) return mCm;
-            if (Context.NOTIFICATION_SERVICE.equals(name)) return mock(NotificationManager.class);
+            if (Context.NOTIFICATION_SERVICE.equals(name)) return mNotificationManager;
             if (Context.NETWORK_STACK_SERVICE.equals(name)) return mNetworkStack;
             if (Context.USER_SERVICE.equals(name)) return mUserManager;
             return super.getSystemService(name);
@@ -372,7 +380,17 @@ public class ConnectivityServiceTest {
         public PackageManager getPackageManager() {
             return mPackageManager;
         }
-   }
+
+        @Override
+        public void enforceCallingOrSelfPermission(String permission, String message) {
+            // The mainline permission can only be held if signed with the network stack certificate
+            // Skip testing for this permission.
+            if (NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK.equals(permission)) return;
+            // All other permissions should be held by the test or unnecessary: check as normal to
+            // make sure the code does not rely on unexpected permissions.
+            super.enforceCallingOrSelfPermission(permission, message);
+        }
+    }
 
     public void waitForIdle(int timeoutMsAsInt) {
         long timeoutMs = timeoutMsAsInt;
@@ -2318,9 +2336,17 @@ public class ConnectivityServiceTest {
         mCm.unregisterNetworkCallback(trackDefaultCallback);
     }
 
+    private void grantUsingBackgroundNetworksPermissionForUid(final int uid) throws Exception {
+        final String testPackageName = mContext.getPackageName();
+        when(mPackageManager.getPackageInfo(eq(testPackageName), eq(GET_PERMISSIONS)))
+                .thenReturn(buildPackageInfo(true, uid));
+        mService.mPermissionMonitor.onPackageAdded(testPackageName, uid);
+    }
+
     @Test
-    public void testNetworkGoesIntoBackgroundAfterLinger() {
+    public void testNetworkGoesIntoBackgroundAfterLinger() throws Exception {
         setAlwaysOnNetworks(true);
+        grantUsingBackgroundNetworksPermissionForUid(Binder.getCallingUid());
         NetworkRequest request = new NetworkRequest.Builder()
                 .clearCapabilities()
                 .build();
@@ -2857,6 +2883,9 @@ public class ConnectivityServiceTest {
 
         // Expect NET_CAPABILITY_VALIDATED onAvailable callback.
         validatedCallback.expectAvailableDoubleValidatedCallbacks(mWiFiNetworkAgent);
+        // Expect no notification to be shown when captive portal disappears by itself
+        verify(mNotificationManager, never()).notifyAsUser(
+                anyString(), eq(NotificationType.LOGGED_IN.eventId), any(), any());
 
         // Break network connectivity.
         // Expect NET_CAPABILITY_VALIDATED onLost callback.
@@ -2886,6 +2915,8 @@ public class ConnectivityServiceTest {
         // Check that calling startCaptivePortalApp does nothing.
         final int fastTimeoutMs = 100;
         mCm.startCaptivePortalApp(wifiNetwork);
+        waitForIdle();
+        verify(mWiFiNetworkAgent.mNetworkMonitor, never()).launchCaptivePortalApp();
         mServiceContext.expectNoStartActivityIntent(fastTimeoutMs);
 
         // Turn into a captive portal.
@@ -2896,14 +2927,26 @@ public class ConnectivityServiceTest {
 
         // Check that startCaptivePortalApp sends the expected command to NetworkMonitor.
         mCm.startCaptivePortalApp(wifiNetwork);
-        verify(mWiFiNetworkAgent.mNetworkMonitor, timeout(TIMEOUT_MS).times(1))
-                .launchCaptivePortalApp();
+        waitForIdle();
+        verify(mWiFiNetworkAgent.mNetworkMonitor).launchCaptivePortalApp();
+
+        // NetworkMonitor uses startCaptivePortal(Network, Bundle) (startCaptivePortalAppInternal)
+        final Bundle testBundle = new Bundle();
+        final String testKey = "testkey";
+        final String testValue = "testvalue";
+        testBundle.putString(testKey, testValue);
+        mCm.startCaptivePortalApp(wifiNetwork, testBundle);
+        final Intent signInIntent = mServiceContext.expectStartActivityIntent(TIMEOUT_MS);
+        assertEquals(ACTION_CAPTIVE_PORTAL_SIGN_IN, signInIntent.getAction());
+        assertEquals(testValue, signInIntent.getStringExtra(testKey));
 
         // Report that the captive portal is dismissed, and check that callbacks are fired
         mWiFiNetworkAgent.setNetworkValid();
         mWiFiNetworkAgent.mNetworkMonitor.forceReevaluation(Process.myUid());
         validatedCallback.expectAvailableCallbacksValidated(mWiFiNetworkAgent);
         captivePortalCallback.expectCallback(CallbackState.LOST, mWiFiNetworkAgent);
+        verify(mNotificationManager, times(1)).notifyAsUser(anyString(),
+                eq(NotificationType.LOGGED_IN.eventId), any(), eq(UserHandle.ALL));
 
         mCm.unregisterNetworkCallback(validatedCallback);
         mCm.unregisterNetworkCallback(captivePortalCallback);
@@ -3384,6 +3427,7 @@ public class ConnectivityServiceTest {
         // Create a background request. We can't do this ourselves because ConnectivityService
         // doesn't have an API for it. So just turn on mobile data always on.
         setAlwaysOnNetworks(true);
+        grantUsingBackgroundNetworksPermissionForUid(Binder.getCallingUid());
         final NetworkRequest request = new NetworkRequest.Builder().build();
         final NetworkRequest fgRequest = new NetworkRequest.Builder()
                 .addCapability(NET_CAPABILITY_FOREGROUND).build();
@@ -3550,6 +3594,7 @@ public class ConnectivityServiceTest {
 
     @Test
     public void testMobileDataAlwaysOn() throws Exception {
+        grantUsingBackgroundNetworksPermissionForUid(Binder.getCallingUid());
         final TestNetworkCallback cellNetworkCallback = new TestNetworkCallback();
         final NetworkRequest cellRequest = new NetworkRequest.Builder()
                 .addTransportType(TRANSPORT_CELLULAR).build();
@@ -6497,7 +6542,14 @@ public class ConnectivityServiceTest {
 
     private static PackageInfo buildPackageInfo(boolean hasSystemPermission, int uid) {
         final PackageInfo packageInfo = new PackageInfo();
-        packageInfo.requestedPermissions = new String[0];
+        if (hasSystemPermission) {
+            packageInfo.requestedPermissions = new String[] {
+                    CHANGE_NETWORK_STATE, CONNECTIVITY_USE_RESTRICTED_NETWORKS };
+            packageInfo.requestedPermissionsFlags = new int[] {
+                    REQUESTED_PERMISSION_GRANTED, REQUESTED_PERMISSION_GRANTED };
+        } else {
+            packageInfo.requestedPermissions = new String[0];
+        }
         packageInfo.applicationInfo = new ApplicationInfo();
         packageInfo.applicationInfo.privateFlags = 0;
         packageInfo.applicationInfo.uid = UserHandle.getUid(UserHandle.USER_SYSTEM,

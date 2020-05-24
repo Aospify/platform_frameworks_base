@@ -60,6 +60,9 @@ import java.io.PrintWriter;
  */
 public class EglHelper {
     private static final String TAG = EglHelper.class.getSimpleName();
+    // Below two constants make drawing at low priority, so other things can preempt our drawing.
+    private static final int EGL_CONTEXT_PRIORITY_LEVEL_IMG = 0x3100;
+    private static final int EGL_CONTEXT_PRIORITY_LOW_IMG = 0x3103;
 
     private EGLDisplay mEglDisplay;
     private EGLConfig mEglConfig;
@@ -143,7 +146,13 @@ public class EglHelper {
      * @return true if EglSurface is ready.
      */
     public boolean createEglSurface(SurfaceHolder surfaceHolder) {
-        mEglSurface = eglCreateWindowSurface(mEglDisplay, mEglConfig, surfaceHolder, null, 0);
+        if (hasEglDisplay()) {
+            mEglSurface = eglCreateWindowSurface(mEglDisplay, mEglConfig, surfaceHolder, null, 0);
+        } else {
+            Log.w(TAG, "mEglDisplay is null");
+            return false;
+        }
+
         if (mEglSurface == null || mEglSurface == EGL_NO_SURFACE) {
             Log.w(TAG, "createWindowSurface failed: " + GLUtils.getEGLErrorString(eglGetError()));
             return false;
@@ -181,8 +190,15 @@ public class EglHelper {
      * @return true if EglContext is ready.
      */
     public boolean createEglContext() {
-        int[] attrib_list = new int[] {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
-        mEglContext = eglCreateContext(mEglDisplay, mEglConfig, EGL_NO_CONTEXT, attrib_list, 0);
+        int[] attrib_list = new int[] {EGL_CONTEXT_CLIENT_VERSION, 2,
+                EGL_CONTEXT_PRIORITY_LEVEL_IMG, EGL_CONTEXT_PRIORITY_LOW_IMG, EGL_NONE};
+        if (hasEglDisplay()) {
+            mEglContext = eglCreateContext(mEglDisplay, mEglConfig, EGL_NO_CONTEXT, attrib_list, 0);
+        } else {
+            Log.w(TAG, "mEglDisplay is null");
+            return false;
+        }
+
         if (mEglContext == EGL_NO_CONTEXT) {
             Log.w(TAG, "eglCreateContext failed: " + GLUtils.getEGLErrorString(eglGetError()));
             return false;
@@ -209,6 +225,14 @@ public class EglHelper {
     }
 
     /**
+     * Check if we have EglDisplay.
+     * @return true if EglDisplay is ready.
+     */
+    public boolean hasEglDisplay() {
+        return mEglDisplay != null;
+    }
+
+    /**
      * Swap buffer to display.
      * @return true if swap successfully.
      */
@@ -231,7 +255,9 @@ public class EglHelper {
         if (hasEglContext()) {
             destroyEglContext();
         }
-        eglTerminate(mEglDisplay);
+        if (hasEglDisplay()) {
+            eglTerminate(mEglDisplay);
+        }
         mEglReady = false;
     }
 

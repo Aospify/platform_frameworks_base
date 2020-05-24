@@ -159,15 +159,14 @@ public class StackScrollAlgorithm {
         float drawStart = !ambientState.isOnKeyguard() ? ambientState.getTopPadding()
                 + ambientState.getStackTranslation() + ambientState.getExpandAnimationTopChange()
                 : 0;
-        float previousNotificationEnd = 0;
-        float previousNotificationStart = 0;
+        float clipStart = 0;
         int childCount = algorithmState.visibleChildren.size();
+        boolean firstHeadsUp = true;
         for (int i = 0; i < childCount; i++) {
             ExpandableView child = algorithmState.visibleChildren.get(i);
             ExpandableViewState state = child.getViewState();
             if (!child.mustStayOnScreen() || state.headsUpIsVisible) {
-                previousNotificationEnd = Math.max(drawStart, previousNotificationEnd);
-                previousNotificationStart = Math.max(drawStart, previousNotificationStart);
+                clipStart = Math.max(drawStart, clipStart);
             }
             float newYTranslation = state.yTranslation;
             float newHeight = state.height;
@@ -175,20 +174,21 @@ public class StackScrollAlgorithm {
             boolean isHeadsUp = (child instanceof ExpandableNotificationRow)
                     && ((ExpandableNotificationRow) child).isPinned();
             if (mClipNotificationScrollToTop
-                    && !state.inShelf && newYTranslation < previousNotificationEnd
-                    && (!isHeadsUp || ambientState.isShadeExpanded())) {
+                    && (!state.inShelf || (isHeadsUp && !firstHeadsUp))
+                    && newYTranslation < clipStart) {
                 // The previous view is overlapping on top, clip!
-                float overlapAmount = previousNotificationEnd - newYTranslation;
+                float overlapAmount = clipStart - newYTranslation;
                 state.clipTopAmount = (int) overlapAmount;
             } else {
                 state.clipTopAmount = 0;
             }
-
+            if (isHeadsUp) {
+                firstHeadsUp = false;
+            }
             if (!child.isTransparent()) {
                 // Only update the previous values if we are not transparent,
                 // otherwise we would clip to a transparent view.
-                previousNotificationEnd = newNotificationEnd;
-                previousNotificationStart = newYTranslation;
+                clipStart = Math.max(clipStart, isHeadsUp ? newYTranslation : newNotificationEnd);
             }
         }
     }
@@ -514,11 +514,11 @@ public class StackScrollAlgorithm {
         for (int i = 0; i < childCount; i++) {
             View child = algorithmState.visibleChildren.get(i);
             if (!(child instanceof ExpandableNotificationRow)) {
-                break;
+                continue;
             }
             ExpandableNotificationRow row = (ExpandableNotificationRow) child;
             if (!row.isHeadsUp()) {
-                break;
+                continue;
             }
             ExpandableViewState childState = row.getViewState();
             if (topHeadsUpEntry == null && row.mustStayOnScreen() && !childState.headsUpIsVisible) {
@@ -546,12 +546,12 @@ public class StackScrollAlgorithm {
                 ExpandableViewState topState =
                         topHeadsUpEntry == null ? null : topHeadsUpEntry.getViewState();
                 if (topState != null && !isTopEntry && (!mIsExpanded
-                        || unmodifiedEndLocation < topState.yTranslation + topState.height)) {
+                        || unmodifiedEndLocation > topState.yTranslation + topState.height)) {
                     // Ensure that a headsUp doesn't vertically extend further than the heads-up at
                     // the top most z-position
                     childState.height = row.getIntrinsicHeight();
-                    childState.yTranslation = topState.yTranslation + topState.height
-                            - childState.height;
+                    childState.yTranslation = Math.min(topState.yTranslation + topState.height
+                            - childState.height, childState.yTranslation);
                 }
 
                 // heads up notification show and this row is the top entry of heads up

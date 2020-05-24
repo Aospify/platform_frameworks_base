@@ -1589,8 +1589,8 @@ public class TelephonyManager {
      *
      * <p>Requires Permission: READ_PRIVILEGED_PHONE_STATE, for the calling app to be the device or
      * profile owner and have the READ_PHONE_STATE permission, or that the calling app has carrier
-     * privileges (see {@link #hasCarrierPrivileges}). The profile owner is an app that owns a
-     * managed profile on the device; for more details see <a
+     * privileges (see {@link #hasCarrierPrivileges}) on any active subscription. The profile owner
+     * is an app that owns a managed profile on the device; for more details see <a
      * href="https://developer.android.com/work/managed-profiles">Work profiles</a>. Profile owner
      * access is deprecated and will be removed in a future release.
      *
@@ -1630,8 +1630,8 @@ public class TelephonyManager {
      *
      * <p>Requires Permission: READ_PRIVILEGED_PHONE_STATE, for the calling app to be the device or
      * profile owner and have the READ_PHONE_STATE permission, or that the calling app has carrier
-     * privileges (see {@link #hasCarrierPrivileges}). The profile owner is an app that owns a
-     * managed profile on the device; for more details see <a
+     * privileges (see {@link #hasCarrierPrivileges}) on any active subscription. The profile owner
+     * is an app that owns a managed profile on the device; for more details see <a
      * href="https://developer.android.com/work/managed-profiles">Work profiles</a>. Profile owner
      * access is deprecated and will be removed in a future release.
      *
@@ -1690,7 +1690,8 @@ public class TelephonyManager {
      *     <li>The caller holds the READ_PRIVILEGED_PHONE_STATE permission.</li>
      *     <li>If the caller is the device or profile owner, the caller holds the
      *     {@link Manifest.permission#READ_PHONE_STATE} permission.</li>
-     *     <li>The caller has carrier privileges (see {@link #hasCarrierPrivileges()}.</li>
+     *     <li>The caller has carrier privileges (see {@link #hasCarrierPrivileges()} on any
+     *     active subscription.</li>
      *     <li>The caller is the default SMS app for the device.</li>
      * </ul>
      * <p>The profile owner is an app that owns a managed profile on the device; for more details
@@ -1759,8 +1760,8 @@ public class TelephonyManager {
      *
      * <p>Requires Permission: READ_PRIVILEGED_PHONE_STATE, for the calling app to be the device or
      * profile owner and have the READ_PHONE_STATE permission, or that the calling app has carrier
-     * privileges (see {@link #hasCarrierPrivileges}). The profile owner is an app that owns a
-     * managed profile on the device; for more details see <a
+     * privileges (see {@link #hasCarrierPrivileges}) on any active subscription. The profile owner
+     * is an app that owns a managed profile on the device; for more details see <a
      * href="https://developer.android.com/work/managed-profiles">Work profiles</a>. Profile owner
      * access is deprecated and will be removed in a future release.
      *
@@ -1786,8 +1787,8 @@ public class TelephonyManager {
      *
      * <p>Requires Permission: READ_PRIVILEGED_PHONE_STATE, for the calling app to be the device or
      * profile owner and have the READ_PHONE_STATE permission, or that the calling app has carrier
-     * privileges (see {@link #hasCarrierPrivileges}). The profile owner is an app that owns a
-     * managed profile on the device; for more details see <a
+     * privileges (see {@link #hasCarrierPrivileges}) on any active subscription. The profile owner
+     * is an app that owns a managed profile on the device; for more details see <a
      * href="https://developer.android.com/work/managed-profiles">Work profiles</a>. Profile owner
      * access is deprecated and will be removed in a future release.
      *
@@ -2417,6 +2418,10 @@ public class TelephonyManager {
      * registered operator or the cell nearby, if available.
      * .
      * <p>
+     * Note: In multi-sim, this returns a shared emergency network country iso from other
+     * subscription if the subscription used to create the TelephonyManager doesn't camp on
+     * a network due to some reason (e.g. pin/puk locked), or sim is absent in the corresponding
+     * slot.
      * Note: Result may be unreliable on CDMA networks (use {@link #getPhoneType()} to determine
      * if on a CDMA network).
      */
@@ -2712,6 +2717,8 @@ public class TelephonyManager {
     /** Class of broadly defined "4G" networks. {@hide} */
     @UnsupportedAppUsage
     public static final int NETWORK_CLASS_4_G = 3;
+    /** Class of broadly defined "5G" networks. {@hide} */
+    public static final int NETWORK_CLASS_5_G = 4;
 
     /**
      * Return general class of network type, such as "3G" or "4G". In cases
@@ -2744,6 +2751,8 @@ public class TelephonyManager {
             case NETWORK_TYPE_IWLAN:
             case NETWORK_TYPE_LTE_CA:
                 return NETWORK_CLASS_4_G;
+            case NETWORK_TYPE_NR:
+                return NETWORK_CLASS_5_G;
             default:
                 return NETWORK_CLASS_UNKNOWN;
         }
@@ -3972,14 +3981,41 @@ public class TelephonyManager {
      * The returned set of subscriber IDs will include the subscriber ID corresponding to this
      * TelephonyManager's subId.
      *
+     * This is deprecated and {@link #getMergedSubscriberIdsFromGroup()} should be used for data
+     * usage merging purpose.
+     * TODO: remove this API.
+     *
      * @hide
      */
     @UnsupportedAppUsage
+    @Deprecated
     public @Nullable String[] getMergedSubscriberIds() {
         try {
             ITelephony telephony = getITelephony();
             if (telephony != null)
                 return telephony.getMergedSubscriberIds(getSubId(), getOpPackageName());
+        } catch (RemoteException ex) {
+        } catch (NullPointerException ex) {
+        }
+        return null;
+    }
+
+    /**
+     * Return the set of subscriber IDs that should be considered "merged together" for data usage
+     * purposes. Unlike {@link #getMergedSubscriberIds()} this API merge subscriberIds based on
+     * subscription grouping: subscriberId of those in the same group will all be returned.
+     *
+     * <p>Requires the calling app to have READ_PRIVILEGED_PHONE_STATE permission.
+     *
+     * @hide
+     */
+    @RequiresPermission(android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE)
+    public @Nullable String[] getMergedSubscriberIdsFromGroup() {
+        try {
+            ITelephony telephony = getITelephony();
+            if (telephony != null) {
+                return telephony.getMergedSubscriberIdsFromGroup(getSubId(), getOpPackageName());
+            }
         } catch (RemoteException ex) {
         } catch (NullPointerException ex) {
         }
@@ -4890,7 +4926,8 @@ public class TelephonyManager {
             ITelephony telephony = getITelephony();
             if (telephony == null)
                 return DATA_ACTIVITY_NONE;
-            return telephony.getDataActivity();
+            return telephony.getDataActivityForSubId(
+                    getSubId(SubscriptionManager.getActiveDataSubscriptionId()));
         } catch (RemoteException ex) {
             // the phone process is restarting.
             return DATA_ACTIVITY_NONE;
@@ -4938,7 +4975,8 @@ public class TelephonyManager {
             ITelephony telephony = getITelephony();
             if (telephony == null)
                 return DATA_DISCONNECTED;
-            return telephony.getDataState();
+            return telephony.getDataStateForSubId(
+                    getSubId(SubscriptionManager.getActiveDataSubscriptionId()));
         } catch (RemoteException ex) {
             // the phone process is restarting.
             return DATA_DISCONNECTED;
@@ -5316,7 +5354,8 @@ public class TelephonyManager {
                         public void onError(int errorCode, android.os.ParcelableException detail) {
                             Binder.withCleanCallingIdentity(() ->
                                     executor.execute(() -> callback.onError(
-                                            errorCode, detail.getCause())));
+                                            errorCode,
+                                            detail == null ? null : detail.getCause())));
                         }
                     }, getOpPackageName());
 
@@ -5356,7 +5395,8 @@ public class TelephonyManager {
                         public void onError(int errorCode, android.os.ParcelableException detail) {
                             Binder.withCleanCallingIdentity(() ->
                                     executor.execute(() -> callback.onError(
-                                            errorCode, detail.getCause())));
+                                            errorCode,
+                                            detail == null ? null : detail.getCause())));
                         }
                     }, getOpPackageName(), workSource);
         } catch (RemoteException ex) {
@@ -10788,7 +10828,6 @@ public class TelephonyManager {
      * @param callback Callback will be triggered once it succeeds or failed.
      *                 See {@link TelephonyManager.SetOpportunisticSubscriptionResult}
      *                 for more details. Pass null if don't care about the result.
-     *
      */
     public void setPreferredOpportunisticDataSubscription(int subId, boolean needValidation,
             @Nullable @CallbackExecutor Executor executor, @Nullable Consumer<Integer> callback) {
@@ -10796,6 +10835,12 @@ public class TelephonyManager {
         try {
             IOns iOpportunisticNetworkService = getIOns();
             if (iOpportunisticNetworkService == null) {
+                if (executor == null || callback == null) {
+                    return;
+                }
+                Binder.withCleanCallingIdentity(() -> executor.execute(() -> {
+                    callback.accept(SET_OPPORTUNISTIC_SUB_INACTIVE_SUBSCRIPTION);
+                }));
                 return;
             }
             ISetOpportunisticDataCallback callbackStub = new ISetOpportunisticDataCallback.Stub() {
@@ -10877,9 +10922,16 @@ public class TelephonyManager {
                 if (executor == null || callback == null) {
                     return;
                 }
-                Binder.withCleanCallingIdentity(() -> executor.execute(() -> {
-                    callback.accept(UPDATE_AVAILABLE_NETWORKS_INVALID_ARGUMENTS);
-                }));
+                if (iOpportunisticNetworkService == null) {
+                    /* Todo<b/130595455> passing unknown due to lack of good error codes */
+                    Binder.withCleanCallingIdentity(() -> executor.execute(() -> {
+                        callback.accept(UPDATE_AVAILABLE_NETWORKS_UNKNOWN_FAILURE);
+                    }));
+                } else {
+                    Binder.withCleanCallingIdentity(() -> executor.execute(() -> {
+                        callback.accept(UPDATE_AVAILABLE_NETWORKS_INVALID_ARGUMENTS);
+                    }));
+                }
                 return;
             }
             IUpdateAvailableNetworksCallback callbackStub =
@@ -10955,6 +11007,8 @@ public class TelephonyManager {
      * <p>
      * The {@link #EXTRA_NETWORK_COUNTRY} extra indicates the country code of the current
      * network returned by {@link #getNetworkCountryIso()}.
+     *
+     * <p>There may be a delay of several minutes before reporting that no country is detected.
      *
      * @see #EXTRA_NETWORK_COUNTRY
      * @see #getNetworkCountryIso()

@@ -1012,7 +1012,7 @@ public class TaskStack extends WindowContainer<Task> implements
         EventLog.writeEvent(EventLogTags.WM_STACK_REMOVED, mStackId);
 
         if (mAnimationBackgroundSurface != null) {
-            mAnimationBackgroundSurface.remove();
+            mWmService.mTransactionFactory.make().remove(mAnimationBackgroundSurface).apply();
             mAnimationBackgroundSurface = null;
         }
 
@@ -1747,6 +1747,11 @@ public class TaskStack extends WindowContainer<Task> implements
             if (toBounds.width() == fromBounds.width()
                     && toBounds.height() == fromBounds.height()) {
                 intendedAnimationType = BoundsAnimationController.BOUNDS;
+            } else if (!fromFullscreen && !toBounds.equals(fromBounds)) {
+                // intendedAnimationType may have been reset at the end of RecentsAnimation,
+                // force it to BOUNDS type if we know for certain we're animating to
+                // a different bounds, especially for expand and collapse of PiP window.
+                intendedAnimationType = BoundsAnimationController.BOUNDS;
             }
         }
 
@@ -1936,8 +1941,12 @@ public class TaskStack extends WindowContainer<Task> implements
     public boolean setPinnedStackAlpha(float alpha) {
         // Hold the lock since this is called from the BoundsAnimator running on the UiThread
         synchronized (mWmService.mGlobalLock) {
-            getPendingTransaction().setAlpha(getSurfaceControl(),
-                    mCancelCurrentBoundsAnimation ? 1 : alpha);
+            final SurfaceControl sc = getSurfaceControl();
+            if (sc == null || !sc.isValid()) {
+                // If the stack is already removed, don't bother updating any stack animation
+                return false;
+            }
+            getPendingTransaction().setAlpha(sc, mCancelCurrentBoundsAnimation ? 1 : alpha);
             scheduleAnimation();
             return !mCancelCurrentBoundsAnimation;
         }

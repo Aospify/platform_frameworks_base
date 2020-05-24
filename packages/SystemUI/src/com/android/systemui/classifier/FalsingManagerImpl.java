@@ -67,8 +67,8 @@ public class FalsingManagerImpl implements FalsingManager {
             Sensor.TYPE_LIGHT,
             Sensor.TYPE_ROTATION_VECTOR,
     };
-    private static final String FALSING_REMAIN_LOCKED = "falsing_failure_after_attempts";
-    private static final String FALSING_SUCCESS = "falsing_success_after_attempts";
+    public static final String FALSING_REMAIN_LOCKED = "falsing_failure_after_attempts";
+    public static final String FALSING_SUCCESS = "falsing_success_after_attempts";
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private final Context mContext;
@@ -168,6 +168,7 @@ public class FalsingManagerImpl implements FalsingManager {
                     .append("enabled=").append(isEnabled() ? 1 : 0)
                     .append(" mScreenOn=").append(mScreenOn ? 1 : 0)
                     .append(" mState=").append(StatusBarState.toShortString(mState))
+                    .append(" mShowingAod=").append(mShowingAod ? 1 : 0)
                     .toString()
             );
         }
@@ -548,6 +549,14 @@ public class FalsingManagerImpl implements FalsingManager {
         pw.print("mState="); pw.println(StatusBarState.toShortString(mState));
         pw.print("mScreenOn="); pw.println(mScreenOn ? 1 : 0);
         pw.println();
+    }
+
+    @Override
+    public void cleanup() {
+        mSensorManager.unregisterListener(mSensorEventListener);
+        mContext.getContentResolver().unregisterContentObserver(mSettingsObserver);
+        Dependency.get(StatusBarStateController.class).removeCallback(mStatusBarStateListener);
+        KeyguardUpdateMonitor.getInstance(mContext).removeCallback(mKeyguardUpdateCallback);
     }
 
     public Uri reportRejectedTouch() {

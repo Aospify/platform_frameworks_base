@@ -925,7 +925,7 @@ public class ActivityManager {
      * (which tends to consume a lot more RAM).
      * @hide
      */
-    @UnsupportedAppUsage
+    @TestApi
     static public boolean isHighEndGfx() {
         return !isLowRamDeviceStatic()
                 && !RoSystemProperties.CONFIG_AVOID_GFX_ACCEL
@@ -2897,7 +2897,7 @@ public class ActivityManager {
         public static final int IMPORTANCE_CANT_SAVE_STATE_PRE_26 = 170;
 
         /**
-         * Constant for {@link #importance}: This process is contains services
+         * Constant for {@link #importance}: This process contains services
          * that should remain running.  These are background services apps have
          * started, not something the user is aware of, so they may be killed by
          * the system relatively freely (though it is generally desired that they

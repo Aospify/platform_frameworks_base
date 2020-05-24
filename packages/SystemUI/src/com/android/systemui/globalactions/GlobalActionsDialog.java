@@ -86,6 +86,7 @@ import com.android.internal.util.ScreenRecordHelper;
 import com.android.internal.util.ScreenshotHelper;
 import com.android.internal.view.RotationPolicy;
 import com.android.internal.widget.LockPatternUtils;
+import com.android.keyguard.KeyguardUpdateMonitor;
 import com.android.systemui.Dependency;
 import com.android.systemui.Interpolators;
 import com.android.systemui.MultiListLayout;
@@ -95,6 +96,7 @@ import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.plugins.GlobalActions.GlobalActionsManager;
 import com.android.systemui.plugins.GlobalActionsPanelPlugin;
 import com.android.systemui.statusbar.phone.ScrimController;
+import com.android.systemui.statusbar.phone.StatusBarWindowController;
 import com.android.systemui.statusbar.phone.UnlockMethodCache;
 import com.android.systemui.statusbar.policy.ConfigurationController;
 import com.android.systemui.util.EmergencyDialerConstants;
@@ -212,11 +214,13 @@ public class GlobalActionsDialog implements DialogInterface.OnDismissListener,
         Dependency.get(ConfigurationController.class).addCallback(this);
 
         mActivityStarter = Dependency.get(ActivityStarter.class);
+        KeyguardUpdateMonitor keyguardUpdateMonitor = KeyguardUpdateMonitor.getInstance(context);
         UnlockMethodCache unlockMethodCache = UnlockMethodCache.getInstance(context);
         unlockMethodCache.addListener(
                 () -> {
                     if (mDialog != null && mDialog.mPanelController != null) {
-                        boolean locked = !unlockMethodCache.canSkipBouncer();
+                        boolean locked = !unlockMethodCache.canSkipBouncer()
+                                && keyguardUpdateMonitor.isKeyguardVisible();
                         mDialog.mPanelController.onDeviceLockStateChanged(locked);
                     }
                 });
@@ -413,9 +417,7 @@ public class GlobalActionsDialog implements DialogInterface.OnDismissListener,
                                 new GlobalActionsPanelPlugin.Callbacks() {
                                     @Override
                                     public void dismissGlobalActionsMenu() {
-                                        if (mDialog != null) {
-                                            mDialog.dismiss();
-                                        }
+                                        dismissDialog();
                                     }
 
                                     @Override
@@ -613,7 +615,7 @@ public class GlobalActionsDialog implements DialogInterface.OnDismissListener,
             mHandler.postDelayed(new Runnable() {
                 @Override
                 public void run() {
-                    mScreenshotHelper.takeScreenshot(1, true, true, mHandler);
+                    mScreenshotHelper.takeScreenshot(1, true, true, mHandler, null);
                     MetricsLogger.action(mContext,
                             MetricsEvent.ACTION_SCREENSHOT_POWER_MENU);
                 }
@@ -911,6 +913,9 @@ public class GlobalActionsDialog implements DialogInterface.OnDismissListener,
 
     /** {@inheritDoc} */
     public void onDismiss(DialogInterface dialog) {
+        if (mDialog == dialog) {
+            mDialog = null;
+        }
         mWindowManagerFuncs.onGlobalActionsHidden();
         if (mShowSilentToggle) {
             try {
@@ -1515,6 +1520,8 @@ public class GlobalActionsDialog implements DialogInterface.OnDismissListener,
         private boolean mShowing;
         private float mScrimAlpha;
         private ResetOrientationData mResetOrientationData;
+        private boolean mHadTopUi;
+        private final StatusBarWindowController mStatusBarWindowController;
 
         ActionsDialog(Context context, MyAdapter adapter,
                 GlobalActionsPanelPlugin.PanelViewController plugin) {
@@ -1523,6 +1530,7 @@ public class GlobalActionsDialog implements DialogInterface.OnDismissListener,
             mAdapter = adapter;
             mColorExtractor = Dependency.get(SysuiColorExtractor.class);
             mStatusBarService = Dependency.get(IStatusBarService.class);
+            mStatusBarWindowController = Dependency.get(StatusBarWindowController.class);
 
             // Window initialization
             Window window = getWindow();
@@ -1698,6 +1706,8 @@ public class GlobalActionsDialog implements DialogInterface.OnDismissListener,
         public void show() {
             super.show();
             mShowing = true;
+            mHadTopUi = mStatusBarWindowController.getForceHasTopUi();
+            mStatusBarWindowController.setForceHasTopUi(true);
             mBackgroundDrawable.setAlpha(0);
             mGlobalActionsLayout.setTranslationX(mGlobalActionsLayout.getAnimationOffsetX());
             mGlobalActionsLayout.setTranslationY(mGlobalActionsLayout.getAnimationOffsetY());
@@ -1730,7 +1740,7 @@ public class GlobalActionsDialog implements DialogInterface.OnDismissListener,
                     .translationX(mGlobalActionsLayout.getAnimationOffsetX())
                     .translationY(mGlobalActionsLayout.getAnimationOffsetY())
                     .setDuration(300)
-                    .withEndAction(super::dismiss)
+                    .withEndAction(this::completeDismiss)
                     .setInterpolator(new LogAccelerateInterpolator())
                     .setUpdateListener(animation -> {
                         int alpha = (int) ((1f - (Float) animation.getAnimatedValue())
@@ -1743,10 +1753,15 @@ public class GlobalActionsDialog implements DialogInterface.OnDismissListener,
         }
 
         void dismissImmediately() {
-            super.dismiss();
             mShowing = false;
             dismissPanel();
             resetOrientation();
+            completeDismiss();
+        }
+
+        private void completeDismiss() {
+            mStatusBarWindowController.setForceHasTopUi(mHadTopUi);
+            super.dismiss();
         }
 
         private void dismissPanel() {

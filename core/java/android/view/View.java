@@ -492,7 +492,7 @@ import java.util.function.Predicate;
  *
  * <p>
  * To initiate a layout, call {@link #requestLayout}. This method is typically
- * called by a view on itself when it believes that is can no longer fit within
+ * called by a view on itself when it believes that it can no longer fit within
  * its current bounds.
  * </p>
  *
@@ -966,6 +966,19 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * insets are consumed if this flag is set to {@code false}.
      */
     static boolean sBrokenInsetsDispatch;
+
+    /**
+     * Prior to Q, calling
+     * {@link com.android.internal.policy.DecorView#setBackgroundDrawable(Drawable)}
+     * did not call update the window format so the opacity of the background was not correctly
+     * applied to the window. Some applications rely on this misbehavior to work properly.
+     * <p>
+     * From Q, {@link com.android.internal.policy.DecorView#setBackgroundDrawable(Drawable)} is
+     * the same as {@link com.android.internal.policy.DecorView#setWindowBackground(Drawable)}
+     * which updates the window format.
+     * @hide
+     */
+    protected static boolean sBrokenWindowBackground;
 
     /** @hide */
     @IntDef({NOT_FOCUSABLE, FOCUSABLE, FOCUSABLE_AUTO})
@@ -2837,7 +2850,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
     /**
      * Default for the root view. The gravity determines the text alignment, ALIGN_NORMAL,
-     * ALIGN_CENTER, or ALIGN_OPPOSITE, which are relative to each paragraph’s text direction.
+     * ALIGN_CENTER, or ALIGN_OPPOSITE, which are relative to each paragraph's text direction.
      *
      * Use with {@link #setTextAlignment(int)}
      */
@@ -2865,7 +2878,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     public static final int TEXT_ALIGNMENT_CENTER = 4;
 
     /**
-     * Align to the start of the view, which is ALIGN_LEFT if the view’s resolved
+     * Align to the start of the view, which is ALIGN_LEFT if the view's resolved
      * layoutDirection is LTR, and ALIGN_RIGHT otherwise.
      *
      * Use with {@link #setTextAlignment(int)}
@@ -2873,7 +2886,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     public static final int TEXT_ALIGNMENT_VIEW_START = 5;
 
     /**
-     * Align to the end of the view, which is ALIGN_RIGHT if the view’s resolved
+     * Align to the end of the view, which is ALIGN_RIGHT if the view's resolved
      * layoutDirection is LTR, and ALIGN_LEFT otherwise.
      *
      * Use with {@link #setTextAlignment(int)}
@@ -3676,7 +3689,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * if the user swipes from the top of the screen.
      * <p>When system bars are hidden in immersive mode, they can be revealed temporarily with
      * system gestures, such as swiping from the top of the screen.  These transient system bars
-     * will overlay app’s content, may have some degree of transparency, and will automatically
+     * will overlay app's content, may have some degree of transparency, and will automatically
      * hide after a short timeout.
      * </p><p>Since this flag is a modifier for {@link #SYSTEM_UI_FLAG_FULLSCREEN} and
      * {@link #SYSTEM_UI_FLAG_HIDE_NAVIGATION}, it only has an effect when used in combination
@@ -5222,6 +5235,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
             sBrokenInsetsDispatch = ViewRootImpl.sNewInsetsMode != NEW_INSETS_MODE_FULL
                     || targetSdkVersion < Build.VERSION_CODES.Q;
+
+            sBrokenWindowBackground = targetSdkVersion < Build.VERSION_CODES.Q;
 
             sCompatibilityDone = true;
         }
@@ -10278,7 +10293,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
-     * Gets the unique identifier of the window in which this View reseides.
+     * Gets the unique identifier of the window in which this View resides.
      *
      * @return The window accessibility id.
      *
@@ -11069,6 +11084,13 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * an edge swipe or dragging a <code>SeekBar</code> thumb.</p>
      *
      * <p>Do not modify the provided list after this method is called.</p>
+     *
+     * <p>Note: the system will put a limit of <code>200dp</code> on the vertical extent of the
+     * exclusions it takes into account. The limit does not apply while the navigation
+     * bar is {@link #SYSTEM_UI_FLAG_IMMERSIVE_STICKY stickily} hidden, nor to the
+     * {@link android.inputmethodservice.InputMethodService input method} and
+     * {@link Intent#CATEGORY_HOME home activity}.
+     * </p>
      *
      * @param rects A list of precision gesture regions that this view needs to function correctly
      */
@@ -14322,6 +14344,14 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
+     * @return true if this view and all ancestors are visible as of the last
+     * {@link #onVisibilityAggregated(boolean)} call.
+     */
+    boolean isAggregatedVisible() {
+        return (mPrivateFlags3 & PFLAG3_AGGREGATED_VISIBLE) != 0;
+    }
+
+    /**
      * Internal dispatching method for {@link #onVisibilityAggregated}. Overridden by
      * ViewGroup. Intended to only be called when {@link #isAttachedToWindow()},
      * {@link #getWindowVisibility()} is {@link #VISIBLE} and this view's parent {@link #isShown()}.
@@ -14349,7 +14379,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     @CallSuper
     public void onVisibilityAggregated(boolean isVisible) {
         // Update our internal visibility tracking so we can detect changes
-        boolean oldVisible = (mPrivateFlags3 & PFLAG3_AGGREGATED_VISIBLE) != 0;
+        boolean oldVisible = isAggregatedVisible();
         mPrivateFlags3 = isVisible ? (mPrivateFlags3 | PFLAG3_AGGREGATED_VISIBLE)
                 : (mPrivateFlags3 & ~PFLAG3_AGGREGATED_VISIBLE);
         if (isVisible && mAttachInfo != null) {
@@ -14401,6 +14431,9 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         }
 
         notifyAppearedOrDisappearedForContentCaptureIfNeeded(isVisible);
+        if (!getSystemGestureExclusionRects().isEmpty() && isVisible != oldVisible) {
+            postUpdateSystemGestureExclusionRects();
+        }
     }
 
     /**
@@ -16098,7 +16131,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * by the most recent call to {@link #measure(int, int)}.  This result is a bit mask
      * as defined by {@link #MEASURED_SIZE_MASK} and {@link #MEASURED_STATE_TOO_SMALL}.
      * This should be used during measurement and layout calculations only. Use
-     * {@link #getHeight()} to see how wide a view is after layout.
+     * {@link #getHeight()} to see how high a view is after layout.
      *
      * @return The measured height of this view as a bit mask.
      */
@@ -26358,7 +26391,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
     /**
      * Returns the over-scroll mode for this view. The result will be
-     * one of {@link #OVER_SCROLL_ALWAYS} (default), {@link #OVER_SCROLL_IF_CONTENT_SCROLLS}
+     * one of {@link #OVER_SCROLL_ALWAYS}, {@link #OVER_SCROLL_IF_CONTENT_SCROLLS}
      * (allow over-scrolling only if the view content is larger than the container),
      * or {@link #OVER_SCROLL_NEVER}.
      *
@@ -26375,7 +26408,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
     /**
      * Set the over-scroll mode for this view. Valid over-scroll modes are
-     * {@link #OVER_SCROLL_ALWAYS} (default), {@link #OVER_SCROLL_IF_CONTENT_SCROLLS}
+     * {@link #OVER_SCROLL_ALWAYS}, {@link #OVER_SCROLL_IF_CONTENT_SCROLLS}
      * (allow over-scrolling only if the view content is larger than the container),
      * or {@link #OVER_SCROLL_NEVER}.
      *

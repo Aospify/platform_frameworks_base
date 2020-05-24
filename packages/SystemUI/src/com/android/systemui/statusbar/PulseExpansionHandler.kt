@@ -27,16 +27,19 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.VelocityTracker
 import android.view.ViewConfiguration
+import com.android.systemui.Dependency
 
 import com.android.systemui.Gefingerpoken
 import com.android.systemui.Interpolators
 import com.android.systemui.R
-import com.android.systemui.classifier.FalsingManagerFactory
 import com.android.systemui.plugins.FalsingManager
+import com.android.systemui.plugins.statusbar.StatusBarStateController
 import com.android.systemui.statusbar.notification.NotificationWakeUpCoordinator
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow
 import com.android.systemui.statusbar.notification.row.ExpandableView
+import com.android.systemui.statusbar.notification.stack.NotificationRoundnessManager
 import com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout
+import com.android.systemui.statusbar.phone.HeadsUpManagerPhone
 import com.android.systemui.statusbar.phone.KeyguardBypassController
 import com.android.systemui.statusbar.phone.ShadeController
 
@@ -49,9 +52,14 @@ import kotlin.math.max
  */
 @Singleton
 class PulseExpansionHandler @Inject
-constructor(context: Context,
-            private val wakeUpCoordinator: NotificationWakeUpCoordinator,
-            private val bypassController: KeyguardBypassController) : Gefingerpoken {
+constructor(
+    context: Context,
+    private val wakeUpCoordinator: NotificationWakeUpCoordinator,
+    private val bypassController: KeyguardBypassController,
+    private val headsUpManager: HeadsUpManagerPhone,
+    private val roundnessManager: NotificationRoundnessManager,
+    private val statusBarStateController: StatusBarStateController
+) : Gefingerpoken {
     companion object {
         private val RUBBERBAND_FACTOR_STATIC = 0.25f
         private val SPRING_BACK_ANIMATION_LENGTH_MS = 375
@@ -67,9 +75,20 @@ constructor(context: Context,
             val changed = field != value
             field = value
             bypassController.isPulseExpanding = value
-            if (changed && !value && !leavingLockscreen) {
-                bypassController.maybePerformPendingUnlock()
-                pulseExpandAbortListener?.run()
+            if (changed) {
+                if (value) {
+                    val topEntry = headsUpManager.topEntry
+                    topEntry?.let {
+                        roundnessManager.setTrackingHeadsUp(it.row)
+                    }
+                } else {
+                    roundnessManager.setTrackingHeadsUp(null)
+                    if (!leavingLockscreen) {
+                        bypassController.maybePerformPendingUnlock()
+                        pulseExpandAbortListener?.run()
+                    }
+                }
+                headsUpManager.unpinAll(true /* userUnPinned */)
             }
         }
     var leavingLockscreen: Boolean = false
@@ -99,7 +118,7 @@ constructor(context: Context,
         mMinDragDistance = context.resources.getDimensionPixelSize(
                 R.dimen.keyguard_drag_down_min_distance)
         mTouchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
-        mFalsingManager = FalsingManagerFactory.getInstance(context)
+        mFalsingManager = Dependency.get(FalsingManager::class.java)
         mPowerManager = context.getSystemService(PowerManager::class.java)
     }
 
@@ -108,8 +127,8 @@ constructor(context: Context,
     }
 
     private fun maybeStartExpansion(event: MotionEvent): Boolean {
-        if (!wakeUpCoordinator.canShowPulsingHuns || qsExpanded
-                || bouncerShowing) {
+        if (!wakeUpCoordinator.canShowPulsingHuns || qsExpanded ||
+                bouncerShowing) {
             return false
         }
         if (velocityTracker == null) {
@@ -144,18 +163,18 @@ constructor(context: Context,
             }
 
             MotionEvent.ACTION_UP -> {
-                recycleVelocityTracker();
+                recycleVelocityTracker()
             }
 
             MotionEvent.ACTION_CANCEL -> {
-                recycleVelocityTracker();
+                recycleVelocityTracker()
             }
         }
         return false
     }
 
     private fun recycleVelocityTracker() {
-        velocityTracker?.recycle();
+        velocityTracker?.recycle()
         velocityTracker = null
     }
 
@@ -171,7 +190,8 @@ constructor(context: Context,
             MotionEvent.ACTION_MOVE -> updateExpansionHeight(moveDistance)
             MotionEvent.ACTION_UP -> {
                 velocityTracker!!.computeCurrentVelocity(1000 /* units */)
-                val canExpand = moveDistance > 0 && velocityTracker!!.getYVelocity() > -1000
+                val canExpand = moveDistance > 0 && velocityTracker!!.getYVelocity() > -1000 &&
+                        statusBarStateController.state != StatusBarState.SHADE
                 if (!mFalsingManager.isUnlockingDisabled && !isFalseTouch && canExpand) {
                     finishExpansion()
                 } else {
@@ -200,7 +220,7 @@ constructor(context: Context,
                     "com.android.systemui:PULSEDRAG")
         }
         shadeController.goToLockedShade(mStartingChild)
-        leavingLockscreen = true;
+        leavingLockscreen = true
         isExpanding = false
         if (mStartingChild is ExpandableNotificationRow) {
             val row = mStartingChild as ExpandableNotificationRow?
@@ -211,7 +231,7 @@ constructor(context: Context,
     private fun updateExpansionHeight(height: Float) {
         var expansionHeight = max(height, 0.0f)
         if (!mReachedWakeUpHeight && height > mWakeUpHeight) {
-            mReachedWakeUpHeight = true;
+            mReachedWakeUpHeight = true
         }
         if (mStartingChild != null) {
             val child = mStartingChild!!
@@ -231,7 +251,7 @@ constructor(context: Context,
     }
 
     private fun captureStartingChild(x: Float, y: Float) {
-        if (mStartingChild == null) {
+        if (mStartingChild == null && !bypassController.bypassEnabled) {
             mStartingChild = findView(x, y)
             if (mStartingChild != null) {
                 setUserLocked(mStartingChild!!, true)
@@ -301,9 +321,11 @@ constructor(context: Context,
         } else null
     }
 
-    fun setUp(stackScroller: NotificationStackScrollLayout,
-              expansionCallback: ExpansionCallback,
-              shadeController: ShadeController) {
+    fun setUp(
+        stackScroller: NotificationStackScrollLayout,
+        expansionCallback: ExpansionCallback,
+        shadeController: ShadeController
+    ) {
         this.expansionCallback = expansionCallback
         this.shadeController = shadeController
         this.stackScroller = stackScroller

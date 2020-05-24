@@ -28,7 +28,7 @@ import static android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
 
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.mock;
-import static com.android.dx.mockito.inline.extended.ExtendedMockito.spy;
+import static com.android.dx.mockito.inline.extended.ExtendedMockito.spyOn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.verify;
 import static com.android.server.wm.ActivityStack.ActivityState.DESTROYING;
 import static com.android.server.wm.ActivityStack.ActivityState.FINISHING;
@@ -54,8 +54,11 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 
+import android.app.ActivityManager;
+import android.app.IApplicationThread;
 import android.content.ComponentName;
 import android.content.pm.ActivityInfo;
 import android.os.UserHandle;
@@ -82,8 +85,9 @@ public class ActivityStackTests extends ActivityTestsBase {
     @Before
     public void setUp() throws Exception {
         mDefaultDisplay = mRootActivityContainer.getDefaultDisplay();
-        mStack = spy(mDefaultDisplay.createStack(WINDOWING_MODE_UNDEFINED, ACTIVITY_TYPE_STANDARD,
-                true /* onTop */));
+        mStack = mDefaultDisplay.createStack(WINDOWING_MODE_UNDEFINED, ACTIVITY_TYPE_STANDARD,
+                true /* onTop */);
+        spyOn(mStack);
         mTask = new TaskBuilder(mSupervisor).setStack(mStack).build();
     }
 
@@ -259,6 +263,35 @@ public class ActivityStackTests extends ActivityTestsBase {
         assertEquals(r, task.getTopActivity(false /* includeOverlays */));
         assertEquals(taskOverlay, task.getTopActivity(true /* includeOverlays */));
         assertNotNull(result.mRecord);
+    }
+
+    @Test
+    public void testFindTaskAlias() {
+        final String targetActivity = "target.activity";
+        final String aliasActivity = "alias.activity";
+        final ComponentName target = new ComponentName(DEFAULT_COMPONENT_PACKAGE_NAME,
+                targetActivity);
+        final ComponentName alias = new ComponentName(DEFAULT_COMPONENT_PACKAGE_NAME,
+                aliasActivity);
+        final TaskRecord task = new TaskBuilder(mService.mStackSupervisor).setStack(mStack).build();
+        task.origActivity = alias;
+        task.realActivity = target;
+        new ActivityBuilder(mService).setComponent(target).setTask(task).setTargetActivity(
+                targetActivity).build();
+
+        // Using target activity to find task.
+        final ActivityRecord r1 = new ActivityBuilder(mService).setComponent(
+                target).setTargetActivity(targetActivity).build();
+        RootActivityContainer.FindTaskResult result = new RootActivityContainer.FindTaskResult();
+        mStack.findTaskLocked(r1, result);
+        assertThat(result.mRecord).isNotNull();
+
+        // Using alias activity to find task.
+        final ActivityRecord r2 = new ActivityBuilder(mService).setComponent(
+                alias).setTargetActivity(targetActivity).build();
+        result = new RootActivityContainer.FindTaskResult();
+        mStack.findTaskLocked(r2, result);
+        assertThat(result.mRecord).isNotNull();
     }
 
     @Test
@@ -1047,6 +1080,37 @@ public class ActivityStackTests extends ActivityTestsBase {
             mDefaultDisplay.unregisterStackOrderChangedListener(listener);
         }
         assertTrue(listener.mChanged);
+    }
+
+    @Test
+    public void testNavigateUpTo() {
+        final ActivityStartController controller = mock(ActivityStartController.class);
+        final ActivityStarter starter = new ActivityStarter(controller,
+                mService, mService.mStackSupervisor, mock(ActivityStartInterceptor.class));
+        doReturn(controller).when(mService).getActivityStartController();
+        spyOn(starter);
+        doReturn(ActivityManager.START_SUCCESS).when(starter).execute();
+
+        final ActivityRecord firstActivity = new ActivityBuilder(mService).setTask(mTask).build();
+        final ActivityRecord secondActivity = new ActivityBuilder(mService).setTask(mTask)
+                .setUid(firstActivity.getUid() + 1).build();
+        doReturn(starter).when(controller).obtainStarter(eq(firstActivity.intent), anyString());
+
+        final IApplicationThread thread = secondActivity.app.getThread();
+        secondActivity.app.setThread(null);
+        // This should do nothing from a non-attached caller.
+        assertFalse(mStack.navigateUpToLocked(secondActivity /* source record */,
+                firstActivity.intent /* destIntent */, 0 /* resultCode */, null /* resultData */));
+
+        secondActivity.app.setThread(thread);
+        assertTrue(mStack.navigateUpToLocked(secondActivity /* source record */,
+                firstActivity.intent /* destIntent */, 0 /* resultCode */, null /* resultData */));
+        // The firstActivity uses default launch mode, so the activities between it and itself will
+        // be finished.
+        assertTrue(secondActivity.finishing);
+        assertTrue(firstActivity.finishing);
+        // The calling uid of the new activity should be the current real caller.
+        assertEquals(secondActivity.getUid(), starter.getCallingUid());
     }
 
     private void verifyShouldSleepActivities(boolean focusedStack,

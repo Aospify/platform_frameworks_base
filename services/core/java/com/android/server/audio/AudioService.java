@@ -134,6 +134,7 @@ import android.view.accessibility.AccessibilityManager;
 import android.widget.Toast;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.DumpUtils;
 import com.android.internal.util.Preconditions;
 import com.android.internal.util.XmlUtils;
@@ -199,6 +200,13 @@ public class AudioService extends IAudioService.Stub
 
     /** How long to delay after a volume down event before unmuting a stream */
     private static final int UNMUTE_STREAM_DELAY = 350;
+
+    /**
+     * Delay before disconnecting a device that would cause BECOMING_NOISY intent to be sent,
+     * to give a chance to applications to pause.
+     */
+    @VisibleForTesting
+    public static final int BECOMING_NOISY_DELAY_MS = 1000;
 
     /**
      * Only used in the result from {@link #checkForRingerModeChange(int, int, int)}
@@ -2782,6 +2790,7 @@ public class AudioService extends IAudioService.Stub
     }
 
     public void setMasterMute(boolean mute, int flags, String callingPackage, int userId) {
+        enforceModifyAudioRoutingPermission();
         setMasterMuteInternal(mute, flags, callingPackage, Binder.getCallingUid(),
                 userId);
     }
@@ -4008,8 +4017,7 @@ public class AudioService extends IAudioService.Stub
         final boolean muteSystem = (zenPolicy.priorityCategories
                 & NotificationManager.Policy.PRIORITY_CATEGORY_SYSTEM) == 0;
         final boolean muteNotificationAndRing = ZenModeConfig
-                .areAllPriorityOnlyNotificationZenSoundsMuted(
-                        mNm.getConsolidatedNotificationPolicy());
+                .areAllPriorityOnlyNotificationZenSoundsMuted(zenPolicy);
         return muteAlarms && isAlarm(streamType)
                 || muteMedia && isMedia(streamType)
                 || muteSystem && isSystem(streamType)
@@ -4021,11 +4029,13 @@ public class AudioService extends IAudioService.Stub
     }
 
     /**
-     * DND total silence: media and alarms streams are tied to the muted ringer
-     * {@link ZenModeHelper.RingerModeDelegate#getRingerModeAffectedStreams(int)}
-     * DND alarms only: notification, ringer + system muted (by default tied to muted ringer mode)
-     * DND priority only: alarms, media, system streams can be muted separate from ringer based on
-     * zenPolicy (this method determines which streams)
+     * Notifications, ringer and system sounds are controlled by the ringer:
+     * {@link ZenModeHelper.RingerModeDelegate#getRingerModeAffectedStreams(int)} but can
+     * also be muted by DND based on the DND mode:
+     * DND total silence: media and alarms streams can be muted by DND
+     * DND alarms only: no streams additionally controlled by DND
+     * DND priority only: alarms, media, system, ringer and notification streams can be muted by
+     * DND.  The current applied zenPolicy determines which streams will be muted by DND.
      * @return true if changed, else false
      */
     private boolean updateZenModeAffectedStreams() {
@@ -4045,6 +4055,11 @@ public class AudioService extends IAudioService.Stub
             if ((zenPolicy.priorityCategories
                     & NotificationManager.Policy.PRIORITY_CATEGORY_SYSTEM) == 0) {
                 zenModeAffectedStreams |= 1 << AudioManager.STREAM_SYSTEM;
+            }
+
+            if (ZenModeConfig.areAllPriorityOnlyNotificationZenSoundsMuted(zenPolicy)) {
+                zenModeAffectedStreams |= 1 << AudioManager.STREAM_NOTIFICATION;
+                zenModeAffectedStreams |= 1 << AudioManager.STREAM_RING;
             }
         }
 
@@ -4123,7 +4138,9 @@ public class AudioService extends IAudioService.Stub
                 || adjust == AudioManager.ADJUST_TOGGLE_MUTE;
     }
 
-    /*package*/ boolean isInCommunication() {
+    /** only public for mocking/spying, do not call outside of AudioService */
+    @VisibleForTesting
+    public boolean isInCommunication() {
         boolean IsInCall = false;
 
         TelecomManager telecomManager =
@@ -4292,7 +4309,9 @@ public class AudioService extends IAudioService.Stub
         return false;
     }
 
-    /*package*/ int getDeviceForStream(int stream) {
+    /** only public for mocking/spying, do not call outside of AudioService */
+    @VisibleForTesting
+    public int getDeviceForStream(int stream) {
         int device = getDevicesForStream(stream);
         if ((device & (device - 1)) != 0) {
             // Multiple device selection is either:
@@ -4337,7 +4356,9 @@ public class AudioService extends IAudioService.Stub
         }
     }
 
-    /*package*/ void postObserveDevicesForAllStreams() {
+    /** only public for mocking/spying, do not call outside of AudioService */
+    @VisibleForTesting
+    public void postObserveDevicesForAllStreams() {
         sendMsg(mAudioHandler,
                 MSG_OBSERVE_DEVICES_FOR_ALL_STREAMS,
                 SENDMSG_QUEUE, 0 /*arg1*/, 0 /*arg2*/, null /*obj*/,
@@ -4448,7 +4469,9 @@ public class AudioService extends IAudioService.Stub
             AudioSystem.DEVICE_OUT_ALL_USB |
             AudioSystem.DEVICE_OUT_HDMI;
 
-    /*package*/ void postAccessoryPlugMediaUnmute(int newDevice) {
+    /** only public for mocking/spying, do not call outside of AudioService */
+    @VisibleForTesting
+    public void postAccessoryPlugMediaUnmute(int newDevice) {
         sendMsg(mAudioHandler, MSG_ACCESSORY_PLUG_MEDIA_UNMUTE, SENDMSG_QUEUE,
                 newDevice, 0, null, 0);
     }
@@ -4998,7 +5021,9 @@ public class AudioService extends IAudioService.Stub
         }
     }
 
-    /*package*/ void postSetVolumeIndexOnDevice(int streamType, int vssVolIndex, int device,
+    /** only public for mocking/spying, do not call outside of AudioService */
+    @VisibleForTesting
+    public void postSetVolumeIndexOnDevice(int streamType, int vssVolIndex, int device,
                                                 String caller) {
         sendMsg(mAudioHandler,
                 MSG_SET_DEVICE_STREAM_VOLUME,
@@ -5577,15 +5602,19 @@ public class AudioService extends IAudioService.Stub
 
     /**
      * @return true if there is currently a registered dynamic mixing policy that affects media
+     * and is not a render + loopback policy
      */
-    /*package*/ boolean hasMediaDynamicPolicy() {
+    // only public for mocking/spying
+    @VisibleForTesting
+    public boolean hasMediaDynamicPolicy() {
         synchronized (mAudioPolicies) {
             if (mAudioPolicies.isEmpty()) {
                 return false;
             }
             final Collection<AudioPolicyProxy> appColl = mAudioPolicies.values();
             for (AudioPolicyProxy app : appColl) {
-                if (app.hasMixAffectingUsage(AudioAttributes.USAGE_MEDIA)) {
+                if (app.hasMixAffectingUsage(AudioAttributes.USAGE_MEDIA,
+                        AudioMix.ROUTE_FLAG_LOOP_BACK_RENDER)) {
                     return true;
                 }
             }
@@ -5910,7 +5939,9 @@ public class AudioService extends IAudioService.Stub
         return mMediaFocusControl.getFocusRampTimeMs(focusGain, attr);
     }
 
-    /*package*/ boolean hasAudioFocusUsers() {
+    /** only public for mocking/spying, do not call outside of AudioService */
+    @VisibleForTesting
+    public boolean hasAudioFocusUsers() {
         return mMediaFocusControl.hasAudioFocusUsers();
     }
 
@@ -7348,9 +7379,10 @@ public class AudioService extends IAudioService.Stub
             Binder.restoreCallingIdentity(identity);
         }
 
-        boolean hasMixAffectingUsage(int usage) {
+        boolean hasMixAffectingUsage(int usage, int excludedFlags) {
             for (AudioMix mix : mMixes) {
-                if (mix.isAffectingUsage(usage)) {
+                if (mix.isAffectingUsage(usage)
+                        && ((mix.getRouteFlags() & excludedFlags) != excludedFlags)) {
                     return true;
                 }
             }

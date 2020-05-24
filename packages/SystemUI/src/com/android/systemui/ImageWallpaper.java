@@ -19,6 +19,8 @@ package com.android.systemui;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.graphics.Rect;
+import android.os.HandlerThread;
+import android.os.Trace;
 import android.service.wallpaper.WallpaperService;
 import android.util.Log;
 import android.util.Size;
@@ -45,10 +47,28 @@ public class ImageWallpaper extends WallpaperService {
     // We delayed destroy render context that subsequent render requests have chance to cancel it.
     // This is to avoid destroying then recreating render context in a very short time.
     private static final int DELAY_FINISH_RENDERING = 1000;
+    private static final int INTERVAL_WAIT_FOR_RENDERING = 100;
+    private static final int PATIENCE_WAIT_FOR_RENDERING = 10;
+    private static final boolean DEBUG = true;
+    private HandlerThread mWorker;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        mWorker = new HandlerThread(TAG);
+        mWorker.start();
+    }
 
     @Override
     public Engine onCreateEngine() {
         return new GLEngine(this);
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        mWorker.quitSafely();
+        mWorker = null;
     }
 
     class GLEngine extends Engine implements GLWallpaperRenderer.SurfaceProxy, StateListener {
@@ -64,7 +84,10 @@ public class ImageWallpaper extends WallpaperService {
         private StatusBarStateController mController;
         private final Runnable mFinishRenderingTask = this::finishRendering;
         private final boolean mNeedTransition;
+        private final Object mMonitor = new Object();
         private boolean mNeedRedraw;
+        // This variable can only be accessed in synchronized block.
+        private boolean mWaitingForRendering;
 
         GLEngine(Context context) {
             mNeedTransition = ActivityManager.isHighEndGfx()
@@ -98,13 +121,39 @@ public class ImageWallpaper extends WallpaperService {
         @Override
         public void onOffsetsChanged(float xOffset, float yOffset, float xOffsetStep,
                 float yOffsetStep, int xPixelOffset, int yPixelOffset) {
-            mRenderer.updateOffsets(xOffset, yOffset);
+            mWorker.getThreadHandler().post(() -> mRenderer.updateOffsets(xOffset, yOffset));
         }
 
         @Override
         public void onAmbientModeChanged(boolean inAmbientMode, long animationDuration) {
-            mRenderer.updateAmbientMode(inAmbientMode,
-                    (mNeedTransition || animationDuration != 0) ? animationDuration : 0);
+            if (!mNeedTransition) return;
+            if (DEBUG) {
+                Log.d(TAG, "onAmbientModeChanged: inAmbient=" + inAmbientMode
+                        + ", duration=" + animationDuration);
+            }
+            mWorker.getThreadHandler().post(
+                    () -> mRenderer.updateAmbientMode(inAmbientMode, animationDuration));
+            if (inAmbientMode && animationDuration == 0) {
+                // This means that we are transiting from home to aod, to avoid
+                // race condition between window visibility and transition,
+                // we don't return until the transition is finished. See b/136643341.
+                waitForBackgroundRendering();
+            }
+        }
+
+        private void waitForBackgroundRendering() {
+            synchronized (mMonitor) {
+                try {
+                    mWaitingForRendering = true;
+                    for (int patience = 1; mWaitingForRendering; patience++) {
+                        mMonitor.wait(INTERVAL_WAIT_FOR_RENDERING);
+                        mWaitingForRendering &= patience < PATIENCE_WAIT_FOR_RENDERING;
+                    }
+                } catch (InterruptedException ex) {
+                } finally {
+                    mWaitingForRendering = false;
+                }
+            }
         }
 
         @Override
@@ -113,53 +162,91 @@ public class ImageWallpaper extends WallpaperService {
                 mController.removeCallback(this /* StateListener */);
             }
             mController = null;
-            mRenderer.finish();
-            mRenderer = null;
-            mEglHelper.finish();
-            mEglHelper = null;
-            getSurfaceHolder().getSurface().hwuiDestroy();
+
+            mWorker.getThreadHandler().post(() -> {
+                mRenderer.finish();
+                mRenderer = null;
+                mEglHelper.finish();
+                mEglHelper = null;
+                getSurfaceHolder().getSurface().hwuiDestroy();
+            });
         }
 
         @Override
         public void onSurfaceCreated(SurfaceHolder holder) {
-            mEglHelper.init(holder);
-            mRenderer.onSurfaceCreated();
+            mWorker.getThreadHandler().post(() -> {
+                mEglHelper.init(holder);
+                mRenderer.onSurfaceCreated();
+            });
         }
 
         @Override
         public void onSurfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-            mRenderer.onSurfaceChanged(width, height);
-            mNeedRedraw = true;
+            mWorker.getThreadHandler().post(() -> {
+                if (DEBUG) {
+                    Log.d(TAG, "onSurfaceChanged: w=" + width + ", h=" + height);
+                }
+
+                mRenderer.onSurfaceChanged(width, height);
+                mNeedRedraw = true;
+            });
         }
 
         @Override
         public void onSurfaceRedrawNeeded(SurfaceHolder holder) {
-            if (mNeedRedraw) {
-                preRender();
-                requestRender();
-                postRender();
-                mNeedRedraw = false;
-            }
+            mWorker.getThreadHandler().post(() -> {
+                if (DEBUG) {
+                    Log.d(TAG, "onSurfaceRedrawNeeded: mNeedRedraw=" + mNeedRedraw);
+                }
+
+                if (mNeedRedraw) {
+                    drawFrame();
+                    mNeedRedraw = false;
+                }
+            });
         }
 
         @Override
-        public SurfaceHolder getHolder() {
-            return getSurfaceHolder();
+        public void onVisibilityChanged(boolean visible) {
+            if (DEBUG) {
+                Log.d(TAG, "wallpaper visibility changes to: " + visible);
+            }
+        }
+
+        private void drawFrame() {
+            preRender();
+            requestRender();
+            postRender();
         }
 
         @Override
         public void onStatePostChange() {
             // When back to home, we try to release EGL, which is preserved in lock screen or aod.
             if (mController.getState() == StatusBarState.SHADE) {
-                scheduleFinishRendering();
+                mWorker.getThreadHandler().post(this::scheduleFinishRendering);
             }
         }
 
         @Override
         public void preRender() {
+            if (DEBUG) {
+                Log.d(TAG, "preRender start");
+            }
+
+            // This method should only be invoked from worker thread.
+            Trace.beginSection("ImageWallpaper#preRender");
+            preRenderInternal();
+            Trace.endSection();
+
+            if (DEBUG) {
+                Log.d(TAG, "preRender end");
+            }
+        }
+
+        private void preRenderInternal() {
             boolean contextRecreated = false;
             Rect frame = getSurfaceHolder().getSurfaceFrame();
-            getMainThreadHandler().removeCallbacks(mFinishRenderingTask);
+            cancelFinishRenderingTask();
 
             // Check if we need to recreate egl context.
             if (!mEglHelper.hasEglContext()) {
@@ -187,6 +274,13 @@ public class ImageWallpaper extends WallpaperService {
 
         @Override
         public void requestRender() {
+            // This method should only be invoked from worker thread.
+            Trace.beginSection("ImageWallpaper#requestRender");
+            requestRenderInternal();
+            Trace.endSection();
+        }
+
+        private void requestRenderInternal() {
             Rect frame = getSurfaceHolder().getSurfaceFrame();
             boolean readyToRender = mEglHelper.hasEglContext() && mEglHelper.hasEglSurface()
                     && frame.width() > 0 && frame.height() > 0;
@@ -205,21 +299,55 @@ public class ImageWallpaper extends WallpaperService {
 
         @Override
         public void postRender() {
+            if (DEBUG) {
+                Log.d(TAG, "postRender start");
+            }
+
+            // This method should only be invoked from worker thread.
+            Trace.beginSection("ImageWallpaper#postRender");
+            notifyWaitingThread();
             scheduleFinishRendering();
+            Trace.endSection();
+
+            if (DEBUG) {
+                Log.d(TAG, "postRender end");
+            }
+        }
+
+        private void notifyWaitingThread() {
+            synchronized (mMonitor) {
+                if (mWaitingForRendering) {
+                    try {
+                        mWaitingForRendering = false;
+                        mMonitor.notify();
+                    } catch (IllegalMonitorStateException ex) {
+                    }
+                }
+            }
+        }
+
+        private void cancelFinishRenderingTask() {
+            mWorker.getThreadHandler().removeCallbacks(mFinishRenderingTask);
         }
 
         private void scheduleFinishRendering() {
-            getMainThreadHandler().removeCallbacks(mFinishRenderingTask);
-            getMainThreadHandler().postDelayed(mFinishRenderingTask, DELAY_FINISH_RENDERING);
+            cancelFinishRenderingTask();
+            mWorker.getThreadHandler().postDelayed(mFinishRenderingTask, DELAY_FINISH_RENDERING);
         }
 
         private void finishRendering() {
+            if (DEBUG) {
+                Log.d(TAG, "finishRendering, preserve=" + needPreserveEglContext());
+            }
+
+            Trace.beginSection("ImageWallpaper#finishRendering");
             if (mEglHelper != null) {
                 mEglHelper.destroyEglSurface();
                 if (!needPreserveEglContext()) {
                     mEglHelper.destroyEglContext();
                 }
             }
+            Trace.endSection();
         }
 
         private boolean needPreserveEglContext() {

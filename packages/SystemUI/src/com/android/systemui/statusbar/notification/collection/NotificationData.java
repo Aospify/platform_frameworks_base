@@ -25,7 +25,6 @@ import android.service.notification.NotificationListenerService.RankingMap;
 import android.service.notification.SnoozeCriterion;
 import android.service.notification.StatusBarNotification;
 import android.util.ArrayMap;
-import android.util.Slog;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.systemui.Dependency;
@@ -58,7 +57,6 @@ public class NotificationData {
 
     private final ArrayMap<String, NotificationEntry> mEntries = new ArrayMap<>();
     private final ArrayList<NotificationEntry> mSortedAndFiltered = new ArrayList<>();
-    private final ArrayList<NotificationEntry> mFilteredForUser = new ArrayList<>();
 
     private final NotificationGroupManager mGroupManager =
             Dependency.get(NotificationGroupManager.class);
@@ -108,10 +106,19 @@ public class NotificationData {
             boolean bSystemMax = bImportance >= NotificationManager.IMPORTANCE_HIGH
                     && isSystemNotification(nb);
 
-            boolean isHeadsUp = a.getRow().isHeadsUp();
-            if (isHeadsUp != b.getRow().isHeadsUp()) {
-                return isHeadsUp ? -1 : 1;
-            } else if (isHeadsUp) {
+
+            boolean aHeadsUp = a.getRow().isHeadsUp();
+            boolean bHeadsUp = b.getRow().isHeadsUp();
+
+            // HACK: This should really go elsewhere, but it's currently not straightforward to
+            // extract the comparison code and we're guaranteed to touch every element, so this is
+            // the best place to set the buckets for the moment.
+            a.setIsTopBucket(aHeadsUp || aMedia || aSystemMax || a.isHighPriority());
+            b.setIsTopBucket(bHeadsUp || bMedia || bSystemMax || b.isHighPriority());
+
+            if (aHeadsUp != bHeadsUp) {
+                return aHeadsUp ? -1 : 1;
+            } else if (aHeadsUp) {
                 // Provide consistent ranking with headsUpManager
                 return mHeadsUpManager.compare(a, b);
             } else if (aMedia != bMedia) {
@@ -158,20 +165,20 @@ public class NotificationData {
     }
 
     public ArrayList<NotificationEntry> getNotificationsForCurrentUser() {
-        mFilteredForUser.clear();
-
         synchronized (mEntries) {
             final int len = mEntries.size();
+            ArrayList<NotificationEntry> filteredForUser = new ArrayList<>(len);
+
             for (int i = 0; i < len; i++) {
                 NotificationEntry entry = mEntries.valueAt(i);
                 final StatusBarNotification sbn = entry.notification;
                 if (!getEnvironment().isNotificationForCurrentProfiles(sbn)) {
                     continue;
                 }
-                mFilteredForUser.add(entry);
+                filteredForUser.add(entry);
             }
+            return filteredForUser;
         }
-        return mFilteredForUser;
     }
 
     public NotificationEntry get(String key) {
@@ -193,6 +200,9 @@ public class NotificationData {
             removed = mEntries.remove(key);
         }
         if (removed == null) return null;
+        // NEM may pass us a null ranking map if removing a lifetime-extended notification,
+        // so use the most recent ranking
+        if (ranking == null) ranking = mRankingMap;
         mGroupManager.onEntryRemoved(removed);
         updateRankingAndSort(ranking);
         return removed;
@@ -412,7 +422,14 @@ public class NotificationData {
             }
         }
 
-        Collections.sort(mSortedAndFiltered, mRankingComparator);
+        if (mSortedAndFiltered.size() == 1) {
+            // HACK: We need the comparator to run on all children in order to set the
+            // isHighPriority field. If there is only one child, then the comparison won't be run,
+            // so we have to trigger it manually. Get rid of this code as soon as possible.
+            mRankingComparator.compare(mSortedAndFiltered.get(0), mSortedAndFiltered.get(0));
+        } else {
+            Collections.sort(mSortedAndFiltered, mRankingComparator);
+        }
     }
 
     public void dump(PrintWriter pw, String indent) {

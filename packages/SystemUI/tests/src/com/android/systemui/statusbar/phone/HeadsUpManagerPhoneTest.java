@@ -57,18 +57,19 @@ public class HeadsUpManagerPhoneTest extends AlertingNotificationManagerTest {
     @Mock private VisualStabilityManager mVSManager;
     @Mock private StatusBar mBar;
     @Mock private StatusBarStateController mStatusBarStateController;
+    @Mock private KeyguardBypassController mBypassController;
     private boolean mLivesPastNormalTime;
 
     private final class TestableHeadsUpManagerPhone extends HeadsUpManagerPhone {
         TestableHeadsUpManagerPhone(Context context, View statusBarWindowView,
                 NotificationGroupManager groupManager, StatusBar bar,
                 VisualStabilityManager vsManager,
-                StatusBarStateController statusBarStateController) {
-            super(context, statusBarStateController);
+                StatusBarStateController statusBarStateController,
+                KeyguardBypassController keyguardBypassController) {
+            super(context, statusBarStateController, keyguardBypassController);
             setUp(statusBarWindowView, groupManager, bar, vsManager);
             mMinimumDisplayTime = TEST_MINIMUM_DISPLAY_TIME;
             mAutoDismissNotificationDecay = TEST_AUTO_DISMISS_TIME;
-            mAutoDismissNotificationDecayDozing = TEST_AUTO_DISMISS_TIME;
         }
     }
 
@@ -84,7 +85,7 @@ public class HeadsUpManagerPhoneTest extends AlertingNotificationManagerTest {
                 .thenReturn(TEST_AUTO_DISMISS_TIME);
         when(mVSManager.isReorderingAllowed()).thenReturn(true);
         mHeadsUpManager = new TestableHeadsUpManagerPhone(mContext, mStatusBarWindowView,
-                mGroupManager, mBar, mVSManager, mStatusBarStateController);
+                mGroupManager, mBar, mVSManager, mStatusBarStateController, mBypassController);
         super.setUp();
         mHeadsUpManager.mHandler = mTestHandler;
     }
@@ -132,13 +133,11 @@ public class HeadsUpManagerPhoneTest extends AlertingNotificationManagerTest {
 
     @Test
     public void testExtendHeadsUp() {
-        when(mStatusBarStateController.isDozing()).thenReturn(true);
         mHeadsUpManager.showNotification(mEntry);
         Runnable pastNormalTimeRunnable =
                 () -> mLivesPastNormalTime = mHeadsUpManager.isAlerting(mEntry.key);
         mTestHandler.postDelayed(pastNormalTimeRunnable,
-                mHeadsUpManager.mAutoDismissNotificationDecayDozing +
-                        mHeadsUpManager.mExtensionTime / 2);
+                TEST_AUTO_DISMISS_TIME + mHeadsUpManager.mExtensionTime / 2);
         mTestHandler.postDelayed(TEST_TIMEOUT_RUNNABLE, TEST_TIMEOUT_TIME);
 
         mHeadsUpManager.extendHeadsUp();

@@ -44,7 +44,9 @@ import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.keyguard.KeyguardSecurityModel.SecurityMode;
+import com.android.settingslib.utils.ThreadUtils;
 import com.android.systemui.Dependency;
+import com.android.systemui.R;
 import com.android.systemui.SystemUIFactory;
 import com.android.systemui.statusbar.phone.UnlockMethodCache;
 import com.android.systemui.util.InjectionInflationController;
@@ -237,6 +239,7 @@ public class KeyguardSecurityContainer extends FrameLayout implements KeyguardSe
                     MIN_DRAG_SIZE, getResources().getDisplayMetrics())
                     && !mUpdateMonitor.isFaceDetectionRunning()) {
                 mUpdateMonitor.requestFaceAuth();
+                mCallback.userActivity();
                 showMessage(null, null);
             }
         }
@@ -268,7 +271,7 @@ public class KeyguardSecurityContainer extends FrameLayout implements KeyguardSe
      */
     private void updateBiometricRetry() {
         SecurityMode securityMode = getSecurityMode();
-        mSwipeUpToRetry = mUnlockMethodCache.isUnlockingWithFacePossible()
+        mSwipeUpToRetry = mUnlockMethodCache.isFaceAuthEnabled()
                 && securityMode != SecurityMode.SimPin
                 && securityMode != SecurityMode.SimPuk
                 && securityMode != SecurityMode.None;
@@ -512,7 +515,7 @@ public class KeyguardSecurityContainer extends FrameLayout implements KeyguardSe
                 case SimPuk:
                     // Shortcut for SIM PIN/PUK to go to directly to user's security screen or home
                     SecurityMode securityMode = mSecurityModel.getSecurityMode(targetUserId);
-                    if (securityMode == SecurityMode.None || mLockPatternUtils.isLockScreenDisabled(
+                    if (securityMode == SecurityMode.None && mLockPatternUtils.isLockScreenDisabled(
                             KeyguardUpdateMonitor.getCurrentUser())) {
                         finish = true;
                         eventSubtype = BOUNCER_DISMISS_SIM;
@@ -595,6 +598,11 @@ public class KeyguardSecurityContainer extends FrameLayout implements KeyguardSe
             }
         }
 
+        @Override
+        public void onUserInput() {
+            mUpdateMonitor.cancelFaceAuth();
+        }
+
         public void dismiss(boolean authenticated, int targetId) {
             mSecurityCallback.dismiss(authenticated, targetId);
         }
@@ -608,6 +616,15 @@ public class KeyguardSecurityContainer extends FrameLayout implements KeyguardSe
                 StatsLog.write(StatsLog.KEYGUARD_BOUNCER_PASSWORD_ENTERED,
                     StatsLog.KEYGUARD_BOUNCER_PASSWORD_ENTERED__RESULT__SUCCESS);
                 mLockPatternUtils.reportSuccessfulPasswordAttempt(userId);
+                // Force a garbage collection in an attempt to erase any lockscreen password left in
+                // memory. Do it asynchronously with a 5-sec delay to avoid making the keyguard
+                // dismiss animation janky.
+                ThreadUtils.postOnBackgroundThread(() -> {
+                    try {
+                        Thread.sleep(5000);
+                    } catch (InterruptedException ignored) { }
+                    Runtime.getRuntime().gc();
+                });
             } else {
                 StatsLog.write(StatsLog.KEYGUARD_BOUNCER_PASSWORD_ENTERED,
                     StatsLog.KEYGUARD_BOUNCER_PASSWORD_ENTERED__RESULT__FAILURE);
@@ -638,6 +655,8 @@ public class KeyguardSecurityContainer extends FrameLayout implements KeyguardSe
         public boolean isVerifyUnlockOnly() { return false; }
         @Override
         public void dismiss(boolean securityVerified, int targetUserId) { }
+        @Override
+        public void onUserInput() { }
         @Override
         public void reset() {}
     };

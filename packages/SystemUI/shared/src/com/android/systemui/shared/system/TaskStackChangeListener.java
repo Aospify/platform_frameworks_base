@@ -72,6 +72,13 @@ public abstract class TaskStackChangeListener {
      */
     public void onSingleTaskDisplayDrawn(int displayId) { }
 
+    /**
+     * Called when the last task is removed from a display which can only contain one task.
+     *
+     * @param displayId the id of the display from which the window is removed.
+     */
+    public void onSingleTaskDisplayEmpty(int displayId) {}
+
     public void onTaskProfileLocked(int taskId, int userId) { }
     public void onTaskCreated(int taskId, ComponentName componentName) { }
     public void onTaskRemoved(int taskId) { }
@@ -85,6 +92,14 @@ public abstract class TaskStackChangeListener {
     public void onSizeCompatModeActivityChanged(int displayId, IBinder activityToken) { }
 
     public void onBackPressedOnTaskRoot(RunningTaskInfo taskInfo) { }
+
+    /**
+     * Called when a task is reparented to a stack on a different display.
+     *
+     * @param taskId id of the task which was moved to a different display.
+     * @param newDisplayId id of the new display.
+     */
+    public void onTaskDisplayChanged(int taskId, int newDisplayId) { }
 
     /**
      * Checks that the current user matches the process. Since

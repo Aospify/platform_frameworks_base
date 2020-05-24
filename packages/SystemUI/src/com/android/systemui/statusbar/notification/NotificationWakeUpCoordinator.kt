@@ -29,6 +29,7 @@ import com.android.systemui.statusbar.phone.DozeParameters
 import com.android.systemui.statusbar.phone.HeadsUpManagerPhone
 import com.android.systemui.statusbar.phone.KeyguardBypassController
 import com.android.systemui.statusbar.phone.NotificationIconAreaController
+import com.android.systemui.statusbar.phone.PanelExpansionListener
 import com.android.systemui.statusbar.policy.OnHeadsUpChangedListener
 
 import javax.inject.Inject
@@ -38,9 +39,10 @@ import javax.inject.Singleton
 class NotificationWakeUpCoordinator @Inject constructor(
         private val mContext: Context,
         private val mHeadsUpManagerPhone: HeadsUpManagerPhone,
-        private val mStatusBarStateController: StatusBarStateController,
+        private val statusBarStateController: StatusBarStateController,
         private val bypassController: KeyguardBypassController)
-    : OnHeadsUpChangedListener, StatusBarStateController.StateListener {
+    : OnHeadsUpChangedListener, StatusBarStateController.StateListener,
+        PanelExpansionListener {
 
     private val mNotificationVisibility
             = object : FloatProperty<NotificationWakeUpCoordinator>("notificationVisibility") {
@@ -64,12 +66,32 @@ class NotificationWakeUpCoordinator @Inject constructor(
     private var mVisibilityAnimator: ObjectAnimator? = null
     private var mVisibilityAmount = 0.0f
     private var mLinearVisibilityAmount = 0.0f
-    private var mWakingUp = false
     private val mEntrySetToClearWhenFinished = mutableSetOf<NotificationEntry>()
     private val mDozeParameters: DozeParameters
     private var pulseExpanding: Boolean = false
     private val wakeUpListeners = arrayListOf<WakeUpListener>()
+    private var state: Int = StatusBarState.KEYGUARD
+
     var fullyAwake: Boolean = false
+
+    var wakingUp = false
+        set(value) {
+            field = value
+            willWakeUp = false
+            if (value) {
+                if (mNotificationsVisible && !mNotificationsVisibleForExpansion
+                        && !bypassController.bypassEnabled) {
+                    // We're waking up while pulsing, let's make sure the animation looks nice
+                    mStackScroller.wakeUpFromPulse();
+                }
+                if (bypassController.bypassEnabled && !mNotificationsVisible) {
+                    // Let's make sure our huns become visible once we are waking up in case
+                    // they were blocked by the proximity sensor
+                    updateNotificationVisibility(animate = shouldAnimateVisibility(),
+                            increaseSpeed = false)
+                }
+            }
+        }
 
     var willWakeUp = false
         set(value) {
@@ -78,7 +100,9 @@ class NotificationWakeUpCoordinator @Inject constructor(
             }
         }
 
+    private var collapsedEnoughToHide: Boolean = false
     lateinit var iconAreaController : NotificationIconAreaController
+
     var pulsing: Boolean = false
         set(value) {
             field = value
@@ -100,7 +124,6 @@ class NotificationWakeUpCoordinator @Inject constructor(
                 }
             }
         }
-
     /**
      * True if we can show pulsing heads up notifications
      */
@@ -110,16 +133,31 @@ class NotificationWakeUpCoordinator @Inject constructor(
             var canShow = pulsing
             if (bypassController.bypassEnabled) {
                 // We also allow pulsing on the lock screen!
-                canShow = canShow || (mWakingUp || willWakeUp || fullyAwake)
-                        && mStatusBarStateController.state == StatusBarState.KEYGUARD
+                canShow = canShow || (wakingUp || willWakeUp || fullyAwake)
+                        && statusBarStateController.state == StatusBarState.KEYGUARD
+                // We want to hide the notifications when collapsed too much
+                if (collapsedEnoughToHide) {
+                    canShow = false
+                }
             }
             return canShow
         }
 
     init {
         mHeadsUpManagerPhone.addListener(this)
-        mStatusBarStateController.addCallback(this)
+        statusBarStateController.addCallback(this)
         mDozeParameters = DozeParameters.getInstance(mContext)
+        addListener(object : WakeUpListener {
+            override fun onFullyHiddenChanged(isFullyHidden: Boolean) {
+                if (isFullyHidden && mNotificationsVisibleForExpansion) {
+                    // When the notification becomes fully invisible, let's make sure our expansion
+                    // flag also changes. This can happen if the bouncer shows when dragging down
+                    // and then the screen turning off, where we don't reset this state.
+                    setNotificationsVisibleForExpansion(visible = false, animate = false,
+                            increaseSpeed = false)
+                }
+            }
+        });
     }
 
     fun setStackScroller(stackScroller: NotificationStackScrollLayout) {
@@ -158,7 +196,7 @@ class NotificationWakeUpCoordinator @Inject constructor(
         wakeUpListeners.add(listener);
     }
 
-    fun removeFullyHiddenChangedListener(listener: WakeUpListener) {
+    fun removeListener(listener: WakeUpListener) {
         wakeUpListeners.remove(listener);
     }
 
@@ -167,7 +205,7 @@ class NotificationWakeUpCoordinator @Inject constructor(
         var visible = mNotificationsVisibleForExpansion || mHeadsUpManagerPhone.hasNotifications()
         visible = visible && canShowPulsingHuns
 
-        if (!visible && mNotificationsVisible && (mWakingUp || willWakeUp) && mDozeAmount != 0.0f) {
+        if (!visible && mNotificationsVisible && (wakingUp || willWakeUp) && mDozeAmount != 0.0f) {
             // let's not make notifications invisible while waking up, otherwise the animation
             // is strange
             return;
@@ -217,13 +255,33 @@ class NotificationWakeUpCoordinator @Inject constructor(
 
     override fun onStateChanged(newState: Int) {
         updateDozeAmountIfBypass();
+        if (bypassController.bypassEnabled &&
+                newState == StatusBarState.KEYGUARD && state == StatusBarState.SHADE_LOCKED
+                && (!statusBarStateController.isDozing || shouldAnimateVisibility())) {
+            // We're leaving shade locked. Let's animate the notifications away
+            setNotificationsVisible(visible = true, increaseSpeed = false, animate = false)
+            setNotificationsVisible(visible = false, increaseSpeed = false, animate = true)
+        }
+        this.state = newState
+    }
+
+    override fun onPanelExpansionChanged(expansion: Float, tracking: Boolean) {
+        val collapsedEnough = expansion <= 0.9f
+        if (collapsedEnough != this.collapsedEnoughToHide) {
+            val couldShowPulsingHuns = canShowPulsingHuns;
+            this.collapsedEnoughToHide = collapsedEnough
+            if (couldShowPulsingHuns && !canShowPulsingHuns) {
+                updateNotificationVisibility(animate = true, increaseSpeed = true)
+                mHeadsUpManagerPhone.releaseAllImmediately()
+            }
+        }
     }
 
     private fun updateDozeAmountIfBypass(): Boolean {
         if (bypassController.bypassEnabled) {
             var amount = 1.0f;
-            if (mStatusBarStateController.state == StatusBarState.SHADE
-                    || mStatusBarStateController.state == StatusBarState.SHADE_LOCKED) {
+            if (statusBarStateController.state == StatusBarState.SHADE
+                    || statusBarStateController.state == StatusBarState.SHADE_LOCKED) {
                 amount = 0.0f;
             }
             setDozeAmount(amount,  amount)
@@ -297,16 +355,6 @@ class NotificationWakeUpCoordinator @Inject constructor(
         return if (bypassController.bypassEnabled) 0.0f else overflow
     }
 
-    fun setWakingUp(wakingUp: Boolean) {
-        willWakeUp = false
-        mWakingUp = wakingUp
-        if (wakingUp && mNotificationsVisible && !mNotificationsVisibleForExpansion
-                && !bypassController.bypassEnabled) {
-            // We're waking up while pulsing, let's make sure the animation looks nice
-            mStackScroller.wakeUpFromPulse();
-        }
-    }
-
     override fun onHeadsUpStateChanged(entry: NotificationEntry, isHeadsUp: Boolean) {
         var animate = shouldAnimateVisibility()
         if (!isHeadsUp) {
@@ -315,7 +363,7 @@ class NotificationWakeUpCoordinator @Inject constructor(
                     // if we animate, we see the shelf briefly visible. Instead we fully animate
                     // the notification and its background out
                     animate = false
-                } else if (!mWakingUp && !willWakeUp){
+                } else if (!wakingUp && !willWakeUp){
                     // TODO: look that this is done properly and not by anyone else
                     entry.setHeadsUpAnimatingAway(true)
                     mEntrySetToClearWhenFinished.add(entry)

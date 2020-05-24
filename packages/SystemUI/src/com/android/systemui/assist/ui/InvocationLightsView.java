@@ -100,7 +100,9 @@ public class InvocationLightsView extends View
 
         int cornerRadiusBottom = DisplayUtils.getCornerRadiusBottom(context);
         int cornerRadiusTop = DisplayUtils.getCornerRadiusTop(context);
-        mViewHeight = Math.max(cornerRadiusBottom, cornerRadiusTop);
+        // ensure that height is non-zero even for square corners
+        mViewHeight = Math.max(Math.max(cornerRadiusBottom, cornerRadiusTop),
+            DisplayUtils.convertDpToPx(LIGHT_HEIGHT_DP, context));
 
         final int dualToneDarkTheme = Utils.getThemeAttr(mContext, R.attr.darkIconTheme);
         final int dualToneLightTheme = Utils.getThemeAttr(mContext, R.attr.lightIconTheme);
@@ -247,13 +249,9 @@ public class InvocationLightsView extends View
      * To render corners that aren't circular, override this method in a subclass.
      */
     protected CornerPathRenderer createCornerPathRenderer(Context context) {
-        int displayWidth = DisplayUtils.getWidth(context);
-        int displayHeight = DisplayUtils.getHeight(context);
-        int cornerRadiusBottom = DisplayUtils.getCornerRadiusBottom(context);
-        int cornerRadiusTop = DisplayUtils.getCornerRadiusTop(context);
-        return new CircularCornerPathRenderer(
-                cornerRadiusBottom, cornerRadiusTop, displayWidth, displayHeight);
+        return new CircularCornerPathRenderer(context);
     }
+
     /**
      * Receives an intensity from 0 (lightest) to 1 (darkest) and sets the handle color
      * appropriately. Intention is to match the home handle color.

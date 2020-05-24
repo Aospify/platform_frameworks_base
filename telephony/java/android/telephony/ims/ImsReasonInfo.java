@@ -871,6 +871,25 @@ public final class ImsReasonInfo implements Parcelable {
      */
     public static final int CODE_REJECT_ONGOING_CS_CALL = 1621;
 
+    /**
+     * An attempt was made to place an emergency call over WFC when emergency services is not
+     * currently available in the current location.
+     * @hide
+     */
+    public static final int CODE_EMERGENCY_CALL_OVER_WFC_NOT_AVAILABLE = 1622;
+
+    /**
+     * Indicates that WiFi calling service is not available in the current location.
+     * @hide
+     */
+    public static final int CODE_WFC_SERVICE_NOT_AVAILABLE_IN_THIS_LOCATION = 1623;
+
+    /**
+     * The dialed RTT call should be retried without RTT
+     * @hide
+     */
+    public static final int CODE_RETRY_ON_IMS_WITHOUT_RTT = 3001;
+
     /*
      * OEM specific error codes. To be used by OEMs when they don't want to reveal error code which
      * would be replaced by ERROR_UNSPECIFIED.
@@ -1051,6 +1070,7 @@ public final class ImsReasonInfo implements Parcelable {
             CODE_REJECT_VT_AVPF_NOT_ALLOWED,
             CODE_REJECT_ONGOING_ENCRYPTED_CALL,
             CODE_REJECT_ONGOING_CS_CALL,
+            CODE_RETRY_ON_IMS_WITHOUT_RTT,
             CODE_OEM_CAUSE_1,
             CODE_OEM_CAUSE_2,
             CODE_OEM_CAUSE_3,

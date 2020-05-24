@@ -190,6 +190,7 @@ public final class DefaultPermissionGrantPolicy {
     static {
         STORAGE_PERMISSIONS.add(Manifest.permission.READ_EXTERNAL_STORAGE);
         STORAGE_PERMISSIONS.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        STORAGE_PERMISSIONS.add(Manifest.permission.ACCESS_MEDIA_LOCATION);
     }
 
     private static final int MSG_READ_DEFAULT_PERMISSION_EXCEPTIONS = 1;
@@ -1170,6 +1171,11 @@ public final class DefaultPermissionGrantPolicy {
                 final int flags = mContext.getPackageManager().getPermissionFlags(
                         permission, pkg.packageName, user);
 
+                // If we are trying to grant as system fixed and already system fixed
+                // then the system can change the system fixed grant state.
+                final boolean changingGrantForSystemFixed = systemFixed
+                        && (flags & PackageManager.FLAG_PERMISSION_SYSTEM_FIXED) != 0;
+
                 // Certain flags imply that the permission's current state by the system or
                 // device/profile owner or the user. In these cases we do not want to clobber the
                 // current state.
@@ -1177,7 +1183,8 @@ public final class DefaultPermissionGrantPolicy {
                 // Unless the caller wants to override user choices. The override is
                 // to make sure we can grant the needed permission to the default
                 // sms and phone apps after the user chooses this in the UI.
-                if (!isFixedOrUserSet(flags) || ignoreSystemPackage) {
+                if (!isFixedOrUserSet(flags) || ignoreSystemPackage
+                        || changingGrantForSystemFixed) {
                     // Never clobber policy fixed permissions.
                     // We must allow the grant of a system-fixed permission because
                     // system-fixed is sticky, but the permission itself may be revoked.
@@ -1194,6 +1201,14 @@ public final class DefaultPermissionGrantPolicy {
                                 pkg.packageName,
                                 PackageManager.FLAG_PERMISSION_RESTRICTION_SYSTEM_EXEMPT,
                                 PackageManager.FLAG_PERMISSION_RESTRICTION_SYSTEM_EXEMPT, user);
+                    }
+
+                    // If the system tries to change a system fixed permission from one fixed
+                    // state to another we need to drop the fixed flag to allow the grant.
+                    if (changingGrantForSystemFixed) {
+                        mContext.getPackageManager().updatePermissionFlags(permission,
+                                pkg.packageName, flags,
+                                flags & ~PackageManager.FLAG_PERMISSION_SYSTEM_FIXED, user);
                     }
 
                     if (pm.checkPermission(permission, pkg.packageName)

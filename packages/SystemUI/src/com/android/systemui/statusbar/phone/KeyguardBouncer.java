@@ -40,9 +40,9 @@ import com.android.keyguard.KeyguardHostView;
 import com.android.keyguard.KeyguardSecurityView;
 import com.android.keyguard.KeyguardUpdateMonitor;
 import com.android.keyguard.KeyguardUpdateMonitorCallback;
-import com.android.keyguard.R;
 import com.android.keyguard.ViewMediatorCallback;
 import com.android.systemui.DejankUtils;
+import com.android.systemui.R;
 import com.android.systemui.keyguard.DismissCallbackRegistry;
 import com.android.systemui.plugins.FalsingManager;
 
@@ -77,6 +77,7 @@ public class KeyguardBouncer {
                 }
             };
     private final Runnable mRemoveViewRunnable = this::removeView;
+    private final KeyguardBypassController mKeyguardBypassController;
     protected KeyguardHostView mKeyguardView;
     private final Runnable mResetRunnable = ()-> {
         if (mKeyguardView != null) {
@@ -97,7 +98,8 @@ public class KeyguardBouncer {
             LockPatternUtils lockPatternUtils, ViewGroup container,
             DismissCallbackRegistry dismissCallbackRegistry, FalsingManager falsingManager,
             BouncerExpansionCallback expansionCallback, UnlockMethodCache unlockMethodCache,
-            KeyguardUpdateMonitor keyguardUpdateMonitor, Handler handler) {
+            KeyguardUpdateMonitor keyguardUpdateMonitor,
+            KeyguardBypassController keyguardBypassController, Handler handler) {
         mContext = context;
         mCallback = callback;
         mLockPatternUtils = lockPatternUtils;
@@ -109,6 +111,7 @@ public class KeyguardBouncer {
         mHandler = handler;
         mUnlockMethodCache = unlockMethodCache;
         mKeyguardUpdateMonitor.registerCallback(mUpdateMonitorCallback);
+        mKeyguardBypassController = keyguardBypassController;
     }
 
     public void show(boolean resetSecuritySelection) {
@@ -170,8 +173,9 @@ public class KeyguardBouncer {
 
         // Split up the work over multiple frames.
         DejankUtils.removeCallbacks(mResetRunnable);
-        if (mUnlockMethodCache.isUnlockingWithFacePossible() && !needsFullscreenBouncer()
-                && !mKeyguardUpdateMonitor.userNeedsStrongAuth()) {
+        if (mUnlockMethodCache.isFaceAuthEnabled() && !needsFullscreenBouncer()
+                && !mKeyguardUpdateMonitor.userNeedsStrongAuth()
+                && !mKeyguardBypassController.getBypassEnabled()) {
             mHandler.postDelayed(mShowRunnable, BOUNCER_FACE_DELAY);
         } else {
             DejankUtils.postAfterTraversal(mShowRunnable);
@@ -207,14 +211,12 @@ public class KeyguardBouncer {
      * @see #onFullyShown()
      */
     private void onFullyHidden() {
-        if (!mShowingSoon) {
-            cancelShowRunnable();
-            if (mRoot != null) {
-                mRoot.setVisibility(View.INVISIBLE);
-            }
-            mFalsingManager.onBouncerHidden();
-            DejankUtils.postAfterTraversal(mResetRunnable);
+        cancelShowRunnable();
+        if (mRoot != null) {
+            mRoot.setVisibility(View.INVISIBLE);
         }
+        mFalsingManager.onBouncerHidden();
+        DejankUtils.postAfterTraversal(mResetRunnable);
     }
 
     private final Runnable mShowRunnable = new Runnable() {
@@ -343,6 +345,13 @@ public class KeyguardBouncer {
     public boolean isShowing() {
         return (mShowingSoon || (mRoot != null && mRoot.getVisibility() == View.VISIBLE))
                 && mExpansion == EXPANSION_VISIBLE && !isAnimatingAway();
+    }
+
+    /**
+     * {@link #show(boolean)} was called but we're not showing yet, or being dragged.
+     */
+    public boolean inTransit() {
+        return mShowingSoon || mExpansion != EXPANSION_HIDDEN && mExpansion != EXPANSION_VISIBLE;
     }
 
     /**

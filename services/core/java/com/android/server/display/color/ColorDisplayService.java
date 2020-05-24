@@ -63,6 +63,8 @@ import android.provider.Settings.Secure;
 import android.provider.Settings.System;
 import android.util.MathUtils;
 import android.util.Slog;
+import android.util.SparseIntArray;
+import android.view.Display;
 import android.view.SurfaceControl;
 import android.view.accessibility.AccessibilityManager;
 import android.view.animation.AnimationUtils;
@@ -171,6 +173,11 @@ public final class ColorDisplayService extends SystemService {
 
     private NightDisplayAutoMode mNightDisplayAutoMode;
 
+    /**
+     * Map of color modes -> display composition colorspace
+     */
+    private SparseIntArray mColorModeCompositionColorSpaces = null;
+
     public ColorDisplayService(Context context) {
         super(context);
         mHandler = new TintHandler(DisplayThread.get().getLooper());
@@ -267,6 +274,30 @@ public final class ColorDisplayService extends SystemService {
         return Secure.getIntForUser(cr, Secure.USER_SETUP_COMPLETE, 0, userHandle) == 1;
     }
 
+    private void setUpDisplayCompositionColorSpaces(Resources res) {
+        mColorModeCompositionColorSpaces = null;
+
+        final int[] colorModes = res.getIntArray(R.array.config_displayCompositionColorModes);
+        if (colorModes == null) {
+            return;
+        }
+
+        final int[] compSpaces = res.getIntArray(R.array.config_displayCompositionColorSpaces);
+        if (compSpaces == null) {
+            return;
+        }
+
+        if (colorModes.length != compSpaces.length) {
+            Slog.e(TAG, "Number of composition color spaces doesn't match specified color modes");
+            return;
+        }
+
+        mColorModeCompositionColorSpaces = new SparseIntArray(colorModes.length);
+        for (int i = 0; i < colorModes.length; i++) {
+            mColorModeCompositionColorSpaces.put(colorModes[i], compSpaces[i]);
+        }
+    }
+
     private void setUp() {
         Slog.d(TAG, "setUp: currentUser=" + mCurrentUser);
 
@@ -359,6 +390,8 @@ public final class ColorDisplayService extends SystemService {
         onAccessibilityInversionChanged();
         onAccessibilityDaltonizerChanged();
 
+        setUpDisplayCompositionColorSpaces(getContext().getResources());
+
         // Set the color mode, if valid, and immediately apply the updated tint matrix based on the
         // existing activated state. This ensures consistency of tint across the color mode change.
         onDisplayColorModeChanged(getColorModeInternal());
@@ -450,6 +483,14 @@ public final class ColorDisplayService extends SystemService {
         }
     }
 
+    private int getCompositionColorSpace(int mode) {
+        if (mColorModeCompositionColorSpaces == null) {
+            return Display.COLOR_MODE_INVALID;
+        }
+
+        return mColorModeCompositionColorSpaces.get(mode, Display.COLOR_MODE_INVALID);
+    }
+
     private void onDisplayColorModeChanged(int mode) {
         if (mode == NOT_SET) {
             return;
@@ -470,7 +511,8 @@ public final class ColorDisplayService extends SystemService {
         // DisplayTransformManager.needsLinearColorMatrix(), therefore it is dependent
         // on the state of DisplayTransformManager.
         final DisplayTransformManager dtm = getLocalService(DisplayTransformManager.class);
-        dtm.setColorMode(mode, mNightDisplayTintController.getMatrix());
+        dtm.setColorMode(mode, mNightDisplayTintController.getMatrix(),
+                getCompositionColorSpace(mode));
 
         if (mDisplayWhiteBalanceTintController.isAvailable(getContext())) {
             updateDisplayWhiteBalanceStatus();
@@ -547,16 +589,18 @@ public final class ColorDisplayService extends SystemService {
         if (immediate) {
             dtm.setColorMatrix(tintController.getLevel(), to);
         } else {
-            tintController.setAnimator(ValueAnimator.ofObject(COLOR_MATRIX_EVALUATOR,
-                    from == null ? MATRIX_IDENTITY : from, to));
-            tintController.getAnimator().setDuration(TRANSITION_DURATION);
-            tintController.getAnimator().setInterpolator(AnimationUtils.loadInterpolator(
+            TintValueAnimator valueAnimator = TintValueAnimator.ofMatrix(COLOR_MATRIX_EVALUATOR,
+                    from == null ? MATRIX_IDENTITY : from, to);
+            tintController.setAnimator(valueAnimator);
+            valueAnimator.setDuration(TRANSITION_DURATION);
+            valueAnimator.setInterpolator(AnimationUtils.loadInterpolator(
                     getContext(), android.R.interpolator.fast_out_slow_in));
-            tintController.getAnimator().addUpdateListener((ValueAnimator animator) -> {
+            valueAnimator.addUpdateListener((ValueAnimator animator) -> {
                 final float[] value = (float[]) animator.getAnimatedValue();
                 dtm.setColorMatrix(tintController.getLevel(), value);
+                ((TintValueAnimator) animator).updateMinMaxComponents();
             });
-            tintController.getAnimator().addListener(new AnimatorListenerAdapter() {
+            valueAnimator.addListener(new AnimatorListenerAdapter() {
 
                 private boolean mIsCancelled;
 
@@ -567,6 +611,14 @@ public final class ColorDisplayService extends SystemService {
 
                 @Override
                 public void onAnimationEnd(Animator animator) {
+                    TintValueAnimator t = (TintValueAnimator) animator;
+                    Slog.d(TAG, tintController.getClass().getSimpleName()
+                            + " Animation cancelled: " + mIsCancelled
+                            + " to matrix: " + TintController.matrixToString(to, 16)
+                            + " min matrix coefficients: "
+                            + TintController.matrixToString(t.getMin(), 16)
+                            + " max matrix coefficients: "
+                            + TintController.matrixToString(t.getMax(), 16));
                     if (!mIsCancelled) {
                         // Ensure final color matrix is set at the end of the animation. If the
                         // animation is cancelled then don't set the final color matrix so the new
@@ -576,7 +628,7 @@ public final class ColorDisplayService extends SystemService {
                     tintController.setAnimator(null);
                 }
             });
-            tintController.getAnimator().start();
+            valueAnimator.start();
         }
     }
 
@@ -1064,6 +1116,51 @@ public final class ColorDisplayService extends SystemService {
     }
 
     /**
+     * Only animates matrices and saves min and max coefficients for logging.
+     */
+    static class TintValueAnimator extends ValueAnimator {
+        private float[] min;
+        private float[] max;
+
+        public static TintValueAnimator ofMatrix(ColorMatrixEvaluator evaluator,
+                Object... values) {
+            TintValueAnimator anim = new TintValueAnimator();
+            anim.setObjectValues(values);
+            anim.setEvaluator(evaluator);
+            if (values == null || values.length == 0) {
+                return null;
+            }
+            float[] m = (float[]) values[0];
+            anim.min = new float[m.length];
+            anim.max = new float[m.length];
+            for (int i = 0; i < m.length; ++i) {
+                anim.min[i] = Float.MAX_VALUE;
+                anim.max[i] = Float.MIN_VALUE;
+            }
+            return anim;
+        }
+
+        public void updateMinMaxComponents() {
+            float[] value = (float[]) getAnimatedValue();
+            if (value == null) {
+                return;
+            }
+            for (int i = 0; i < value.length; ++i) {
+                min[i] = Math.min(min[i], value[i]);
+                max[i] = Math.max(max[i], value[i]);
+            }
+        }
+
+        public float[] getMin() {
+            return min;
+        }
+
+        public float[] getMax() {
+            return max;
+        }
+    }
+
+    /**
      * Interpolates between two 4x4 color transform matrices (in column-major order).
      */
     private static class ColorMatrixEvaluator implements TypeEvaluator<float[]> {
@@ -1272,8 +1369,10 @@ public final class ColorDisplayService extends SystemService {
          * Reset the CCT value for the display white balance transform to its default value.
          */
         public boolean resetDisplayWhiteBalanceColorTemperature() {
-            return setDisplayWhiteBalanceColorTemperature(getContext().getResources()
-                    .getInteger(R.integer.config_displayWhiteBalanceColorTemperatureDefault));
+            int temperatureDefault = getContext().getResources()
+                    .getInteger(R.integer.config_displayWhiteBalanceColorTemperatureDefault);
+            Slog.d(TAG, "resetDisplayWhiteBalanceColorTemperature: " + temperatureDefault);
+            return setDisplayWhiteBalanceColorTemperature(temperatureDefault);
         }
 
         /**

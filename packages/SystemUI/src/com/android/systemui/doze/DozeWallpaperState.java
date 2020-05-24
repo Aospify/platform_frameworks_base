@@ -16,6 +16,7 @@
 
 package com.android.systemui.doze;
 
+import android.annotation.Nullable;
 import android.app.IWallpaperManager;
 import android.content.Context;
 import android.os.RemoteException;
@@ -24,6 +25,7 @@ import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.systemui.statusbar.notification.stack.StackStateAnimator;
+import com.android.systemui.statusbar.phone.BiometricUnlockController;
 import com.android.systemui.statusbar.phone.DozeParameters;
 
 import java.io.PrintWriter;
@@ -36,20 +38,25 @@ public class DozeWallpaperState implements DozeMachine.Part {
     private static final String TAG = "DozeWallpaperState";
     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
 
+    @Nullable
     private final IWallpaperManager mWallpaperManagerService;
     private final DozeParameters mDozeParameters;
+    private final BiometricUnlockController mBiometricUnlockController;
     private boolean mIsAmbientMode;
 
-    public DozeWallpaperState(Context context) {
+    public DozeWallpaperState(Context context,
+            BiometricUnlockController biometricUnlockController) {
         this(IWallpaperManager.Stub.asInterface(
                 ServiceManager.getService(Context.WALLPAPER_SERVICE)),
+                biometricUnlockController,
                 DozeParameters.getInstance(context));
     }
 
     @VisibleForTesting
     DozeWallpaperState(IWallpaperManager wallpaperManagerService,
-            DozeParameters parameters) {
+            BiometricUnlockController biometricUnlockController, DozeParameters parameters) {
         mWallpaperManagerService = wallpaperManagerService;
+        mBiometricUnlockController = biometricUnlockController;
         mDozeParameters = parameters;
     }
 
@@ -76,21 +83,25 @@ public class DozeWallpaperState implements DozeMachine.Part {
         } else {
             boolean wakingUpFromPulse = oldState == DozeMachine.State.DOZE_PULSING
                     && newState == DozeMachine.State.FINISH;
-            animated = !mDozeParameters.getDisplayNeedsBlanking() || wakingUpFromPulse;
+            boolean fastDisplay = !mDozeParameters.getDisplayNeedsBlanking();
+            animated = (fastDisplay && !mBiometricUnlockController.unlockedByWakeAndUnlock())
+                    || wakingUpFromPulse;
         }
 
         if (isAmbientMode != mIsAmbientMode) {
             mIsAmbientMode = isAmbientMode;
-            try {
-                long duration = animated ? StackStateAnimator.ANIMATION_DURATION_WAKEUP : 0L;
-                if (DEBUG) {
-                    Log.i(TAG, "AOD wallpaper state changed to: " + mIsAmbientMode
+            if (mWallpaperManagerService != null) {
+                try {
+                    long duration = animated ? StackStateAnimator.ANIMATION_DURATION_WAKEUP : 0L;
+                    if (DEBUG) {
+                        Log.i(TAG, "AOD wallpaper state changed to: " + mIsAmbientMode
                             + ", animationDuration: " + duration);
+                    }
+                    mWallpaperManagerService.setInAmbientMode(mIsAmbientMode, duration);
+                } catch (RemoteException e) {
+                    // Cannot notify wallpaper manager service, but it's fine, let's just skip it.
+                    Log.w(TAG, "Cannot notify state to WallpaperManagerService: " + mIsAmbientMode);
                 }
-                mWallpaperManagerService.setInAmbientMode(mIsAmbientMode, duration);
-            } catch (RemoteException e) {
-                // Cannot notify wallpaper manager service, but it's fine, let's just skip it.
-                Log.w(TAG, "Cannot notify state to WallpaperManagerService: " + mIsAmbientMode);
             }
         }
     }
@@ -99,5 +110,6 @@ public class DozeWallpaperState implements DozeMachine.Part {
     public void dump(PrintWriter pw) {
         pw.println("DozeWallpaperState:");
         pw.println(" isAmbientMode: " + mIsAmbientMode);
+        pw.println(" hasWallpaperService: " + (mWallpaperManagerService != null));
     }
 }

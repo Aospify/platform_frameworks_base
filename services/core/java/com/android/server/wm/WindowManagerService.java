@@ -32,6 +32,9 @@ import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.os.Process.SYSTEM_UID;
 import static android.os.Process.myPid;
 import static android.os.Trace.TRACE_TAG_WINDOW_MANAGER;
+import static android.provider.DeviceConfig.WindowManager.KEY_SYSTEM_GESTURES_EXCLUDED_BY_PRE_Q_STICKY_IMMERSIVE;
+import static android.provider.DeviceConfig.WindowManager.KEY_SYSTEM_GESTURE_EXCLUSION_LIMIT_DP;
+import static android.provider.DeviceConfig.WindowManager.KEY_SYSTEM_GESTURE_EXCLUSION_LOG_DEBOUNCE_MILLIS;
 import static android.provider.Settings.Global.DEVELOPMENT_FORCE_DESKTOP_MODE_ON_EXTERNAL_DISPLAYS;
 import static android.view.Display.DEFAULT_DISPLAY;
 import static android.view.Display.INVALID_DISPLAY;
@@ -154,6 +157,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Debug;
 import android.os.Handler;
+import android.os.HandlerExecutor;
 import android.os.IBinder;
 import android.os.IRemoteCallback;
 import android.os.Looper;
@@ -175,6 +179,7 @@ import android.os.SystemService;
 import android.os.Trace;
 import android.os.UserHandle;
 import android.os.WorkSource;
+import android.provider.DeviceConfig;
 import android.provider.Settings;
 import android.service.vr.IVrManager;
 import android.service.vr.IVrStateCallbacks;
@@ -379,6 +384,8 @@ public class WindowManagerService extends IWindowManager.Stub
     private static final int ANIMATION_DURATION_SCALE = 2;
 
     private static final int ANIMATION_COMPLETED_TIMEOUT_MS = 5000;
+
+    private static final int MIN_GESTURE_EXCLUSION_LIMIT_DP = 200;
 
     final WindowTracing mWindowTracing;
 
@@ -838,6 +845,19 @@ public class WindowManagerService extends IWindowManager.Stub
     final ArrayList<WindowChangeListener> mWindowChangeListeners = new ArrayList<>();
     boolean mWindowsChanged = false;
 
+    int mSystemGestureExclusionLimitDp;
+    boolean mSystemGestureExcludedByPreQStickyImmersive;
+
+    /**
+     * The minimum duration between gesture exclusion logging for a given window in
+     * milliseconds.
+     *
+     * Events that happen in-between will be silently dropped.
+     *
+     * A non-positive value disables logging.
+     */
+    public long mSystemGestureExclusionLogDebounceTimeoutMillis;
+
     public interface WindowChangeListener {
         public void windowsChanged();
         public void focusChanged();
@@ -845,7 +865,7 @@ public class WindowManagerService extends IWindowManager.Stub
 
     final Configuration mTempConfiguration = new Configuration();
 
-    final HighRefreshRateBlacklist mHighRefreshRateBlacklist = HighRefreshRateBlacklist.create();
+    final HighRefreshRateBlacklist mHighRefreshRateBlacklist;
 
     // If true, only the core apps and services are being launched because the device
     // is in a special boot mode, such as being encrypted or waiting for a decryption password.
@@ -1131,6 +1151,39 @@ public class WindowManagerService extends IWindowManager.Stub
         mTaskPositioningController = new TaskPositioningController(
                 this, mInputManager, mActivityTaskManager, mH.getLooper());
         mDragDropController = new DragDropController(this, mH.getLooper());
+
+        mHighRefreshRateBlacklist = HighRefreshRateBlacklist.create(context.getResources());
+
+        mSystemGestureExclusionLimitDp = Math.max(MIN_GESTURE_EXCLUSION_LIMIT_DP,
+                DeviceConfig.getInt(DeviceConfig.NAMESPACE_WINDOW_MANAGER,
+                        KEY_SYSTEM_GESTURE_EXCLUSION_LIMIT_DP, 0));
+        mSystemGestureExclusionLogDebounceTimeoutMillis =
+                DeviceConfig.getInt(DeviceConfig.NAMESPACE_WINDOW_MANAGER,
+                        KEY_SYSTEM_GESTURE_EXCLUSION_LOG_DEBOUNCE_MILLIS, 0);
+        mSystemGestureExcludedByPreQStickyImmersive =
+                DeviceConfig.getBoolean(DeviceConfig.NAMESPACE_WINDOW_MANAGER,
+                        KEY_SYSTEM_GESTURES_EXCLUDED_BY_PRE_Q_STICKY_IMMERSIVE, false);
+        DeviceConfig.addOnPropertiesChangedListener(DeviceConfig.NAMESPACE_WINDOW_MANAGER,
+                new HandlerExecutor(mH), properties -> {
+                    synchronized (mGlobalLock) {
+                        final int exclusionLimitDp = Math.max(MIN_GESTURE_EXCLUSION_LIMIT_DP,
+                                DeviceConfig.getInt(DeviceConfig.NAMESPACE_WINDOW_MANAGER,
+                                        KEY_SYSTEM_GESTURE_EXCLUSION_LIMIT_DP, 0));
+                        final boolean excludedByPreQSticky = DeviceConfig.getBoolean(
+                                DeviceConfig.NAMESPACE_WINDOW_MANAGER,
+                                KEY_SYSTEM_GESTURES_EXCLUDED_BY_PRE_Q_STICKY_IMMERSIVE, false);
+                        if (mSystemGestureExcludedByPreQStickyImmersive != excludedByPreQSticky
+                                || mSystemGestureExclusionLimitDp != exclusionLimitDp) {
+                            mSystemGestureExclusionLimitDp = exclusionLimitDp;
+                            mSystemGestureExcludedByPreQStickyImmersive = excludedByPreQSticky;
+                            mRoot.forAllDisplays(DisplayContent::updateSystemGestureExclusionLimit);
+                        }
+
+                        mSystemGestureExclusionLogDebounceTimeoutMillis =
+                                DeviceConfig.getInt(DeviceConfig.NAMESPACE_WINDOW_MANAGER,
+                                        KEY_SYSTEM_GESTURE_EXCLUSION_LOG_DEBOUNCE_MILLIS, 0);
+                    }
+                });
 
         LocalServices.addService(WindowManagerInternal.class, new LocalService());
     }
@@ -1970,6 +2023,7 @@ public class WindowManagerService extends IWindowManager.Stub
 
             int attrChanges = 0;
             int flagChanges = 0;
+            int privateFlagChanges = 0;
             if (attrs != null) {
                 displayPolicy.adjustWindowParamsLw(win, attrs, pid, uid);
                 // if they don't have the permission, mask out the status bar bits
@@ -1998,6 +2052,7 @@ public class WindowManagerService extends IWindowManager.Stub
                 }
 
                 flagChanges = win.mAttrs.flags ^= attrs.flags;
+                privateFlagChanges = win.mAttrs.privateFlags ^ attrs.privateFlags;
                 attrChanges = win.mAttrs.copyFrom(attrs);
                 if ((attrChanges & (WindowManager.LayoutParams.LAYOUT_CHANGED
                         | WindowManager.LayoutParams.SYSTEM_UI_VISIBILITY_CHANGED)) != 0) {
@@ -2015,7 +2070,7 @@ public class WindowManagerService extends IWindowManager.Stub
                     mAccessibilityController.onSomeWindowResizedOrMovedLocked();
                 }
 
-                if ((flagChanges & SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS) != 0) {
+                if ((privateFlagChanges & SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS) != 0) {
                     updateNonSystemOverlayWindowsVisibilityIfNeeded(
                             win, win.mWinAnimator.getShown());
                 }
@@ -4520,7 +4575,6 @@ public class WindowManagerService extends IWindowManager.Stub
         public static final int SEAMLESS_ROTATION_TIMEOUT = 54;
         public static final int RESTORE_POINTER_ICON = 55;
         public static final int SET_HAS_OVERLAY_UI = 58;
-        public static final int SET_RUNNING_REMOTE_ANIMATION = 59;
         public static final int ANIMATION_FAILSAFE = 60;
         public static final int RECOMPUTE_FOCUS = 61;
         public static final int ON_POINTER_DOWN_OUTSIDE_FOCUS = 62;
@@ -4897,10 +4951,6 @@ public class WindowManagerService extends IWindowManager.Stub
                 }
                 case SET_HAS_OVERLAY_UI: {
                     mAmInternal.setHasOverlayUi(msg.arg1, msg.arg2 == 1);
-                    break;
-                }
-                case SET_RUNNING_REMOTE_ANIMATION: {
-                    mAmInternal.setRunningRemoteAnimation(msg.arg1, msg.arg2 == 1);
                     break;
                 }
                 case ANIMATION_FAILSAFE: {
@@ -5890,6 +5940,12 @@ public class WindowManagerService extends IWindowManager.Stub
         mRoot.dumpTokens(pw, dumpAll);
     }
 
+
+    private void dumpHighRefreshRateBlacklist(PrintWriter pw) {
+        pw.println("WINDOW MANAGER HIGH REFRESH RATE BLACKLIST (dumpsys window refresh)");
+        mHighRefreshRateBlacklist.dump(pw);
+    }
+
     private void dumpTraceStatus(PrintWriter pw) {
         pw.println("WINDOW MANAGER TRACE (dumpsys window trace)");
         pw.print(mWindowTracing.getStatus() + "\n");
@@ -6289,6 +6345,9 @@ public class WindowManagerService extends IWindowManager.Stub
             } else if ("trace".equals(cmd)) {
                 dumpTraceStatus(pw);
                 return;
+            } else if ("refresh".equals(cmd)) {
+                dumpHighRefreshRateBlacklist(pw);
+                return;
             } else {
                 // Dumping a single name?
                 if (!dumpWindows(pw, cmd, args, opti, dumpAll)) {
@@ -6344,6 +6403,10 @@ public class WindowManagerService extends IWindowManager.Stub
                 pw.println(separator);
             }
             dumpTraceStatus(pw);
+            if (dumpAll) {
+                pw.println(separator);
+            }
+            dumpHighRefreshRateBlacklist(pw);
         }
     }
 
@@ -7545,7 +7608,7 @@ public class WindowManagerService extends IWindowManager.Stub
             return;
         }
         final boolean systemAlertWindowsHidden = !mHidingNonSystemOverlayWindows.isEmpty();
-        if (surfaceShown) {
+        if (surfaceShown && win.hideNonSystemOverlayWindowsWhenVisible()) {
             if (!mHidingNonSystemOverlayWindows.contains(win)) {
                 mHidingNonSystemOverlayWindows.add(win);
             }
@@ -7574,11 +7637,6 @@ public class WindowManagerService extends IWindowManager.Stub
 
     SurfaceControl.Builder makeSurfaceBuilder(SurfaceSession s) {
         return mSurfaceBuilderFactory.make(s);
-    }
-
-    void sendSetRunningRemoteAnimation(int pid, boolean runningRemoteAnimation) {
-        mH.obtainMessage(H.SET_RUNNING_REMOTE_ANIMATION, pid, runningRemoteAnimation ? 1 : 0)
-                .sendToTarget();
     }
 
     void startSeamlessRotation() {
@@ -7641,10 +7699,12 @@ public class WindowManagerService extends IWindowManager.Stub
             isDown = motionEvent.getAction() == MotionEvent.ACTION_DOWN;
             isUp = motionEvent.getAction() == MotionEvent.ACTION_UP;
         }
+        final boolean isMouseEvent = ev.getSource() == InputDevice.SOURCE_MOUSE;
 
         // For ACTION_DOWN, syncInputTransactions before injecting input.
+        // For all mouse events, also sync before injecting.
         // For ACTION_UP, sync after injecting.
-        if (isDown) {
+        if (isDown || isMouseEvent) {
             syncInputTransactions();
         }
         final boolean result =
@@ -7693,7 +7753,7 @@ public class WindowManagerService extends IWindowManager.Stub
 
     private void onPointerDownOutsideFocusLocked(IBinder touchedToken) {
         final WindowState touchedWindow = windowForClientLocked(null, touchedToken, false);
-        if (touchedWindow == null) {
+        if (touchedWindow == null || !touchedWindow.canReceiveKeys()) {
             return;
         }
 

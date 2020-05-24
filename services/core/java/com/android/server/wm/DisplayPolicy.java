@@ -478,26 +478,34 @@ public class DisplayPolicy {
 
                     @Override
                     public void onSwipeFromRight() {
-                        final Region excludedRegion =
-                                mDisplayContent.calculateSystemGestureExclusion();
+                        final Region excludedRegion = Region.obtain();
+                        synchronized (mLock) {
+                            mDisplayContent.calculateSystemGestureExclusion(
+                                    excludedRegion, null /* outUnrestricted */);
+                        }
                         final boolean sideAllowed = mNavigationBarAlwaysShowOnSideGesture
                                 || mNavigationBarPosition == NAV_BAR_RIGHT;
                         if (mNavigationBar != null && sideAllowed
                                 && !mSystemGestures.currentGestureStartedInRegion(excludedRegion)) {
                             requestTransientBars(mNavigationBar);
                         }
+                        excludedRegion.recycle();
                     }
 
                     @Override
                     public void onSwipeFromLeft() {
-                        final Region excludedRegion =
-                                mDisplayContent.calculateSystemGestureExclusion();
+                        final Region excludedRegion = Region.obtain();
+                        synchronized (mLock) {
+                            mDisplayContent.calculateSystemGestureExclusion(
+                                    excludedRegion, null /* outUnrestricted */);
+                        }
                         final boolean sideAllowed = mNavigationBarAlwaysShowOnSideGesture
                                 || mNavigationBarPosition == NAV_BAR_LEFT;
                         if (mNavigationBar != null && sideAllowed
                                 && !mSystemGestures.currentGestureStartedInRegion(excludedRegion)) {
                             requestTransientBars(mNavigationBar);
                         }
+                        excludedRegion.recycle();
                     }
 
                     @Override
@@ -668,6 +676,10 @@ public class DisplayPolicy {
 
     public boolean hasStatusBar() {
         return mHasStatusBar;
+    }
+
+    boolean hasSideGestures() {
+        return mHasNavigationBar && mSideGestureInset > 0;
     }
 
     public boolean navigationBarCanMove() {
@@ -853,6 +865,8 @@ public class DisplayPolicy {
                 if (canToastShowWhenLocked(callingPid)) {
                     attrs.flags |= WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED;
                 }
+                // Toasts can't be clickable
+                attrs.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
                 break;
         }
 
@@ -1494,8 +1508,6 @@ public class DisplayPolicy {
         }
 
         sTmpRect.setEmpty();
-        sTmpDockedFrame.set(displayFrames.mDock);
-
         final int displayId = displayFrames.mDisplayId;
         final Rect dockFrame = displayFrames.mDock;
         final int displayHeight = displayFrames.mDisplayHeight;
@@ -1508,11 +1520,13 @@ public class DisplayPolicy {
                 continue;
             }
 
-            w.getWindowFrames().setFrames(sTmpDockedFrame /* parentFrame */,
-                    sTmpDockedFrame /* displayFrame */, sTmpDockedFrame /* overscanFrame */,
-                    sTmpDockedFrame /* contentFrame */, sTmpDockedFrame /* visibleFrame */,
-                    sTmpRect /* decorFrame */, sTmpDockedFrame /* stableFrame */,
-                    sTmpDockedFrame /* outsetFrame */);
+            w.getWindowFrames().setFrames(displayFrames.mUnrestricted /* parentFrame */,
+                    displayFrames.mUnrestricted /* displayFrame */,
+                    displayFrames.mUnrestricted /* overscanFrame */,
+                    displayFrames.mUnrestricted /* contentFrame */,
+                    displayFrames.mUnrestricted /* visibleFrame */, sTmpRect /* decorFrame */,
+                    displayFrames.mUnrestricted /* stableFrame */,
+                    displayFrames.mUnrestricted /* outsetFrame */);
             w.getWindowFrames().setDisplayCutout(displayFrames.mDisplayCutout);
             w.computeFrameLw();
             final Rect frame = w.getFrameLw();
@@ -2800,7 +2814,11 @@ public class DisplayPolicy {
         mHandler.post(() -> {
             final int displayId = getDisplayId();
             getStatusBarManagerInternal().onDisplayReady(displayId);
-            LocalServices.getService(WallpaperManagerInternal.class).onDisplayReady(displayId);
+            final WallpaperManagerInternal wpMgr = LocalServices
+                    .getService(WallpaperManagerInternal.class);
+            if (wpMgr != null) {
+                wpMgr.onDisplayReady(displayId);
+            }
         });
     }
 
@@ -3610,7 +3628,8 @@ public class DisplayPolicy {
         if (mScreenshotHelper != null) {
             mScreenshotHelper.takeScreenshot(screenshotType,
                     mStatusBar != null && mStatusBar.isVisibleLw(),
-                    mNavigationBar != null && mNavigationBar.isVisibleLw(), mHandler);
+                    mNavigationBar != null && mNavigationBar.isVisibleLw(),
+                    mHandler, null /* completionConsumer */);
         }
     }
 

@@ -33,7 +33,6 @@ import android.os.ServiceManager;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
-import android.service.notification.StatusBarNotification;
 import android.util.Log;
 import android.util.SparseArray;
 import android.util.SparseBooleanArray;
@@ -59,10 +58,14 @@ import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
 
+import javax.inject.Inject;
+import javax.inject.Singleton;
+
 /**
  * Handles keeping track of the current user, profiles, and various things related to hiding
  * contents, redacting notifications, and the lockscreen.
  */
+@Singleton
 public class NotificationLockscreenUserManagerImpl implements
         Dumpable, NotificationLockscreenUserManager, StateListener {
     private static final String TAG = "LockscreenUserManager";
@@ -172,6 +175,7 @@ public class NotificationLockscreenUserManagerImpl implements
         return mEntryManager;
     }
 
+    @Inject
     public NotificationLockscreenUserManagerImpl(Context context) {
         mContext = context;
         mDevicePolicyManager = (DevicePolicyManager) mContext.getSystemService(
@@ -302,7 +306,7 @@ public class NotificationLockscreenUserManagerImpl implements
                         Notification.VISIBILITY_SECRET;
     }
 
-    public boolean shouldShowOnKeyguard(StatusBarNotification sbn) {
+    public boolean shouldShowOnKeyguard(NotificationEntry entry) {
         if (getEntryManager() == null) {
             Log.wtf(TAG, "mEntryManager was null!", new Throwable());
             return false;
@@ -310,10 +314,10 @@ public class NotificationLockscreenUserManagerImpl implements
         boolean exceedsPriorityThreshold;
         if (NotificationUtils.useNewInterruptionModel(mContext)
                 && hideSilentNotificationsOnLockscreen()) {
-            exceedsPriorityThreshold = getEntryManager().getNotificationData().isHighPriority(sbn);
+            exceedsPriorityThreshold = entry.isTopBucket();
         } else {
             exceedsPriorityThreshold =
-                    !getEntryManager().getNotificationData().isAmbient(sbn.getKey());
+                    !getEntryManager().getNotificationData().isAmbient(entry.key);
         }
         return mShowLockscreenNotifications && exceedsPriorityThreshold;
     }

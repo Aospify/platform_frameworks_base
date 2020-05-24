@@ -47,6 +47,20 @@ public final class SystemUiDeviceConfigFlags {
      */
     public static final String NAS_MAX_SUGGESTIONS = "nas_max_suggestions";
 
+    // Flags related to screenshot intelligence
+
+    /**
+     * (bool) Whether to enable smart actions in screenshot notifications.
+     */
+    public static final String ENABLE_SCREENSHOT_NOTIFICATION_SMART_ACTIONS =
+            "enable_screenshot_notification_smart_actions";
+
+    /**
+     * (int) Timeout value in ms to get smart actions for screenshot notification.
+     */
+    public static final String SCREENSHOT_NOTIFICATION_SMART_ACTIONS_TIMEOUT_MS =
+            "screenshot_notification_smart_actions_timeout_ms";
+
     // Flags related to Smart Suggestions - these are read in SmartReplyConstants.
 
     /** (boolean) Whether to enable smart suggestions in notifications. */
@@ -106,13 +120,6 @@ public final class SystemUiDeviceConfigFlags {
      */
     public static final String HASH_SALT_MAX_DAYS = "hash_salt_max_days";
 
-    // Flag related to Privacy Indicators
-
-    /**
-     * Whether the Permissions Hub is showing.
-     */
-    public static final String PROPERTY_PERMISSIONS_HUB_ENABLED = "permissions_hub_enabled";
-
     // Flags related to Assistant
 
     /**
@@ -152,13 +159,6 @@ public final class SystemUiDeviceConfigFlags {
      */
     public static final String ASSIST_HANDLES_SHOWN_FREQUENCY_THRESHOLD_MS =
             "assist_handles_shown_frequency_threshold_ms";
-    // Flag related to clock face
-
-    /**
-     * (String) Contains the clock plugin service names that are not allow to be shown.
-     * Each service name is seperated by a comma(",") in the string.
-     */
-    public static final String CLOCK_FACE_BLACKLIST = "clock_face_blacklist";
 
     /**
      * (long) How long, in milliseconds, for teaching behaviors to wait before considering the user
@@ -194,12 +194,133 @@ public final class SystemUiDeviceConfigFlags {
      * Allow touch passthrough above assist area during a session.
      */
     public static final String ASSIST_TAP_PASSTHROUGH = "assist_tap_passthrough";
-  
+
+    /**
+     * (bool) Whether to show handles when taught.
+     */
+    public static final String ASSIST_HANDLES_SHOW_WHEN_TAUGHT = "assist_handles_show_when_taught";
+
+    /**
+     * (long) Duration per pixel, in milliseconds, of scrolling text at fast speed.
+     */
+    public static final String ASSIST_TRANSCRIPTION_DURATION_PER_PX_FAST =
+            "assist_transcription_duration_per_px_fast";
+
+    /**
+     * (long) Duration per pixel, in milliseconds, of scrolling text at regular speed.
+     */
+    public static final String ASSIST_TRANSCRIPTION_DURATION_PER_PX_REGULAR =
+            "assist_transcription_duration_per_px_regular";
+
+    /**
+     * (long) Duration, in milliseconds, over which text fades in.
+     */
+    public static final String ASSIST_TRANSCRIPTION_FADE_IN_DURATION =
+            "assist_transcription_fade_in_duration";
+
+    /**
+     * (long) Maximum total duration, in milliseconds, for a given transcription.
+     */
+    public static final String ASSIST_TRANSCRIPTION_MAX_DURATION =
+            "assist_transcription_max_duration";
+
+    /**
+     * (long) Minimum total duration, in milliseconds, for a given transcription.
+     */
+    public static final String ASSIST_TRANSCRIPTION_MIN_DURATION =
+            "assist_transcription_min_duration";
+
+    // Flags related to brightline falsing
+
     /**
      * (bool) Whether to use the new BrightLineFalsingManager.
      */
     public static final String BRIGHTLINE_FALSING_MANAGER_ENABLED =
             "brightline_falsing_manager_enabled";
+    /**
+     * (float) Maximum fraction of the screen required to qualify as a real swipe.
+     */
+    public static final String BRIGHTLINE_FALSING_DISTANCE_SCREEN_FRACTION_MAX_DISTANCE =
+            "brightline_falsing_distance_screen_fraction_max_distance";
 
-    private SystemUiDeviceConfigFlags() { }
+    /**
+     * (float) Multiplier for swipe velocity to convert it to pixels for a fling.
+     */
+    public static final String BRIGHTLINE_FALSING_DISTANCE_VELOCITY_TO_DISTANCE =
+            "brightline_falsing_distance_velcoity_to_distance";
+
+    /**
+     * (float) How far, in inches, must a fling travel horizontally to qualify as intentional.
+     */
+    public static final String BRIGHTLINE_FALSING_DISTANCE_HORIZONTAL_FLING_THRESHOLD_IN =
+            "brightline_falsing_distance_horizontal_fling_threshold_in";
+
+    /**
+     * (float) Maximum fraction of the screen required to qualify as a real swipe.
+     */
+    public static final String BRIGHTLINE_FALSING_DISTANCE_VERTICAL_FLING_THRESHOLD_IN =
+            "brightline_falsing_distance_vertical_fling_threshold_in";
+
+    /**
+     * (float) How far, in inches, must a continuous swipe travel horizontally to be intentional.
+     */
+    public static final String BRIGHTLINE_FALSING_DISTANCE_HORIZONTAL_SWIPE_THRESHOLD_IN =
+            "brightline_falsing_distance_horizontal_swipe_threshold_in";
+
+    /**
+     * (float) How far, in inches, must a continuous swipe travel vertically to be intentional.
+     */
+    public static final String BRIGHTLINE_FALSING_DISTANCE_VERTICAL_SWIPE_THRESHOLD_IN =
+            "brightline_falsing_distance_horizontal_swipe_threshold_in";
+
+    /**
+     * (float) Percentage of swipe with the proximity sensor covered that triggers a higher
+     * swipe distance requirement.
+     */
+    public static final String BRIGHTLINE_FALSING_PROXIMITY_PERCENT_COVERED_THRESHOLD =
+            "brightline_falsing_proximity_percent_covered_threshold";
+
+    /**
+     * (float) Angle, in radians, that a swipe can vary from horizontal and sill be intentional.
+     */
+    public static final String BRIGHTLINE_FALSING_DIAGONAL_HORIZONTAL_ANGLE_RANGE =
+            "brightline_falsing_diagonal_horizontal_angle_range";
+
+    /**
+     * (float) Angle, in radians, that a swipe can vary from vertical and sill be intentional.
+     */
+    public static final String BRIGHTLINE_FALSING_DIAGONAL_VERTICAL_ANGLE_RANGE =
+            "brightline_falsing_diagonal_horizontal_angle_range";
+
+    /**
+     * (float) Distance, in inches, that a swipe is allowed to vary in the horizontal direction for
+     * horizontal swipes.
+     */
+    public static final String BRIGHTLINE_FALSING_ZIGZAG_X_PRIMARY_DEVIANCE =
+            "brightline_falsing_zigzag_x_primary_deviance";
+
+    /**
+     * (float) Distance, in inches, that a swipe is allowed to vary in the vertical direction for
+     * vertical swipes.
+     */
+    public static final String BRIGHTLINE_FALSING_ZIGZAG_Y_PRIMARY_DEVIANCE =
+            "brightline_falsing_zigzag_y_primary_deviance";
+
+    /**
+     * (float) Distance, in inches, that a swipe is allowed to vary in the horizontal direction for
+     * horizontal swipes.
+     */
+    public static final String BRIGHTLINE_FALSING_ZIGZAG_X_SECONDARY_DEVIANCE =
+            "brightline_falsing_zigzag_x_secondary_deviance";
+
+    /**
+     * (float) Distance, in inches, that a swipe is allowed to vary in the vertical direction for
+     * vertical swipes.
+     */
+    public static final String BRIGHTLINE_FALSING_ZIGZAG_Y_SECONDARY_DEVIANCE =
+            "brightline_falsing_zigzag_y_secondary_deviance";
+
+
+    private SystemUiDeviceConfigFlags() {
+    }
 }

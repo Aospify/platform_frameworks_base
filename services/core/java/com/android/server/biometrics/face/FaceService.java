@@ -53,8 +53,8 @@ import android.os.SELinux;
 import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.provider.Settings;
 import android.util.Slog;
-import android.util.proto.ProtoOutputStream;
 
 import com.android.internal.R;
 import com.android.internal.annotations.GuardedBy;
@@ -64,6 +64,7 @@ import com.android.server.SystemServerInitThreadPool;
 import com.android.server.biometrics.AuthenticationClient;
 import com.android.server.biometrics.BiometricServiceBase;
 import com.android.server.biometrics.BiometricUtils;
+import com.android.server.biometrics.ClientMonitor;
 import com.android.server.biometrics.Constants;
 import com.android.server.biometrics.EnumerateClient;
 import com.android.server.biometrics.RemovalClient;
@@ -223,7 +224,8 @@ public class FaceService extends BiometricServiceBase {
 
         @Override
         public boolean wasUserDetected() {
-            return mLastAcquire != FaceManager.FACE_ACQUIRED_NOT_DETECTED;
+            return mLastAcquire != FaceManager.FACE_ACQUIRED_NOT_DETECTED
+                    && mLastAcquire != FaceManager.FACE_ACQUIRED_SENSOR_DIRTY;
         }
 
         @Override
@@ -329,6 +331,7 @@ public class FaceService extends BiometricServiceBase {
      * Receives the incoming binder calls from FaceManager.
      */
     private final class FaceServiceWrapper extends IFaceService.Stub {
+        private static final int ENROLL_TIMEOUT_SEC = 75;
 
         /**
          * The following methods contain common code which is shared in biometrics/common.
@@ -343,14 +346,27 @@ public class FaceService extends BiometricServiceBase {
         @Override // Binder call
         public int revokeChallenge(IBinder token) {
             checkPermission(MANAGE_BIOMETRIC);
-            return startRevokeChallenge(token);
+            mHandler.post(() -> {
+                // TODO(b/137106905): Schedule binder calls in FaceService to avoid deadlocks.
+                if (getCurrentClient() == null) {
+                    // if we aren't handling any other HIDL calls (mCurrentClient == null), revoke
+                    // the challenge right away.
+                    startRevokeChallenge(token);
+                } else {
+                    // postpone revoking the challenge until we finish processing the current HIDL
+                    // call.
+                    mRevokeChallengePending = true;
+                }
+            });
+            return Status.OK;
         }
 
         @Override // Binder call
-        public void enroll(final IBinder token, final byte[] cryptoToken,
+        public void enroll(int userId, final IBinder token, final byte[] cryptoToken,
                 final IFaceServiceReceiver receiver, final String opPackageName,
                 final int[] disabledFeatures) {
             checkPermission(MANAGE_BIOMETRIC);
+            updateActiveGroup(userId, opPackageName);
 
             mNotificationManager.cancelAsUser(NOTIFICATION_TAG, NOTIFICATION_ID,
                     UserHandle.CURRENT);
@@ -358,7 +374,8 @@ public class FaceService extends BiometricServiceBase {
             final boolean restricted = isRestricted();
             final EnrollClientImpl client = new EnrollClientImpl(getContext(), mDaemonWrapper,
                     mHalDeviceId, token, new ServiceListenerImpl(receiver), mCurrentUserId,
-                    0 /* groupId */, cryptoToken, restricted, opPackageName, disabledFeatures) {
+                    0 /* groupId */, cryptoToken, restricted, opPackageName, disabledFeatures,
+                    ENROLL_TIMEOUT_SEC) {
 
                 @Override
                 public int[] getAcquireIgnorelist() {
@@ -449,8 +466,9 @@ public class FaceService extends BiometricServiceBase {
 
         @Override // Binder call
         public void remove(final IBinder token, final int faceId, final int userId,
-                final IFaceServiceReceiver receiver) {
+                final IFaceServiceReceiver receiver, final String opPackageName) {
             checkPermission(MANAGE_BIOMETRIC);
+            updateActiveGroup(userId, opPackageName);
 
             if (token == null) {
                 Slog.w(TAG, "remove(): token is null");
@@ -503,8 +521,6 @@ public class FaceService extends BiometricServiceBase {
             try {
                 if (args.length > 1 && "--hal".equals(args[0])) {
                     dumpHal(fd, Arrays.copyOfRange(args, 1, args.length, args.getClass()));
-                } else if (args.length > 0 && "--proto".equals(args[0])) {
-                    dumpProto(fd);
                 } else {
                     dumpInternal(pw);
                 }
@@ -600,26 +616,32 @@ public class FaceService extends BiometricServiceBase {
         public void resetLockout(byte[] token) {
             checkPermission(MANAGE_BIOMETRIC);
 
-            if (!FaceService.this.hasEnrolledBiometrics(mCurrentUserId)) {
-                Slog.w(TAG, "Ignoring lockout reset, no templates enrolled");
-                return;
-            }
+            mHandler.post(() -> {
+                if (!FaceService.this.hasEnrolledBiometrics(mCurrentUserId)) {
+                    Slog.w(TAG, "Ignoring lockout reset, no templates enrolled");
+                    return;
+                }
 
-            Slog.d(TAG, "Resetting lockout for user: " + mCurrentUserId);
+                Slog.d(TAG, "Resetting lockout for user: " + mCurrentUserId);
 
-            try {
-                mDaemonWrapper.resetLockout(token);
-            } catch (RemoteException e) {
-                Slog.e(getTag(), "Unable to reset lockout", e);
-            }
+                try {
+                    mDaemonWrapper.resetLockout(token);
+                } catch (RemoteException e) {
+                    Slog.e(getTag(), "Unable to reset lockout", e);
+                }
+            });
         }
 
         @Override
-        public void setFeature(int feature, boolean enabled, final byte[] token,
-                IFaceServiceReceiver receiver) {
+        public void setFeature(int userId, int feature, boolean enabled, final byte[] token,
+                IFaceServiceReceiver receiver, final String opPackageName) {
             checkPermission(MANAGE_BIOMETRIC);
 
             mHandler.post(() -> {
+                if (DEBUG) {
+                    Slog.d(TAG, "setFeature for user(" + userId + ")");
+                }
+                updateActiveGroup(userId, opPackageName);
                 if (!FaceService.this.hasEnrolledBiometrics(mCurrentUserId)) {
                     Slog.e(TAG, "No enrolled biometrics while setting feature: " + feature);
                     return;
@@ -647,10 +669,15 @@ public class FaceService extends BiometricServiceBase {
         }
 
         @Override
-        public void getFeature(int feature, IFaceServiceReceiver receiver) {
+        public void getFeature(int userId, int feature, IFaceServiceReceiver receiver,
+                final String opPackageName) {
             checkPermission(MANAGE_BIOMETRIC);
 
             mHandler.post(() -> {
+                if (DEBUG) {
+                    Slog.d(TAG, "getFeature for user(" + userId + ")");
+                }
+                updateActiveGroup(userId, opPackageName);
                 // This should ideally return tri-state, but the user isn't shown settings unless
                 // they are enrolled so it's fine for now.
                 if (!FaceService.this.hasEnrolledBiometrics(mCurrentUserId)) {
@@ -810,6 +837,7 @@ public class FaceService extends BiometricServiceBase {
     @GuardedBy("this")
     private IBiometricsFace mDaemon;
     private UsageStats mUsageStats;
+    private boolean mRevokeChallengePending = false;
     // One of the AuthenticationClient constants
     private int mCurrentUserLockoutMode;
 
@@ -899,7 +927,8 @@ public class FaceService extends BiometricServiceBase {
                     final Face face = new Face("", 0 /* identifier */, deviceId);
                     FaceService.super.handleRemoved(face, 0 /* remaining */);
                 }
-
+                Settings.Secure.putIntForUser(getContext().getContentResolver(),
+                        Settings.Secure.FACE_UNLOCK_RE_ENROLL, 0, UserHandle.USER_CURRENT);
             });
         }
 
@@ -1036,6 +1065,15 @@ public class FaceService extends BiometricServiceBase {
                 .getIntArray(R.array.config_face_acquire_enroll_ignorelist);
         mEnrollIgnoreListVendor = getContext().getResources()
                 .getIntArray(R.array.config_face_acquire_vendor_enroll_ignorelist);
+    }
+
+    @Override
+    protected void removeClient(ClientMonitor client) {
+        super.removeClient(client);
+        if (mRevokeChallengePending) {
+            startRevokeChallenge(null);
+            mRevokeChallengePending = false;
+        }
     }
 
     @Override
@@ -1249,7 +1287,11 @@ public class FaceService extends BiometricServiceBase {
             return 0;
         }
         try {
-            return daemon.revokeChallenge();
+            final int res = daemon.revokeChallenge();
+            if (res != Status.OK) {
+                Slog.e(TAG, "revokeChallenge returned " + res);
+            }
+            return res;
         } catch (RemoteException e) {
             Slog.e(TAG, "startRevokeChallenge failed", e);
         }
@@ -1294,49 +1336,6 @@ public class FaceService extends BiometricServiceBase {
         pw.println("HAL deaths since last reboot: " + mHALDeathCount);
 
         mUsageStats.print(pw);
-    }
-
-    private void dumpProto(FileDescriptor fd) {
-        final ProtoOutputStream proto = new ProtoOutputStream(fd);
-        for (UserInfo user : UserManager.get(getContext()).getUsers()) {
-            final int userId = user.getUserHandle().getIdentifier();
-
-            final long userToken = proto.start(FaceServiceDumpProto.USERS);
-
-            proto.write(FaceUserStatsProto.USER_ID, userId);
-            proto.write(FaceUserStatsProto.NUM_FACES,
-                    getBiometricUtils().getBiometricsForUser(getContext(), userId).size());
-
-            // Normal face authentications (e.g. lockscreen)
-            final PerformanceStats normal = mPerformanceMap.get(userId);
-            if (normal != null) {
-                final long countsToken = proto.start(FaceUserStatsProto.NORMAL);
-                proto.write(FaceActionStatsProto.ACCEPT, normal.accept);
-                proto.write(FaceActionStatsProto.REJECT, normal.reject);
-                proto.write(FaceActionStatsProto.ACQUIRE, normal.acquire);
-                proto.write(FaceActionStatsProto.LOCKOUT, normal.lockout);
-                proto.write(FaceActionStatsProto.LOCKOUT_PERMANENT, normal.lockout);
-                proto.end(countsToken);
-            }
-
-            // Statistics about secure face transactions (e.g. to unlock password
-            // storage, make secure purchases, etc.)
-            final PerformanceStats crypto = mCryptoPerformanceMap.get(userId);
-            if (crypto != null) {
-                final long countsToken = proto.start(FaceUserStatsProto.CRYPTO);
-                proto.write(FaceActionStatsProto.ACCEPT, crypto.accept);
-                proto.write(FaceActionStatsProto.REJECT, crypto.reject);
-                proto.write(FaceActionStatsProto.ACQUIRE, crypto.acquire);
-                proto.write(FaceActionStatsProto.LOCKOUT, crypto.lockout);
-                proto.write(FaceActionStatsProto.LOCKOUT_PERMANENT, crypto.lockout);
-                proto.end(countsToken);
-            }
-
-            proto.end(userToken);
-        }
-        proto.flush();
-        mPerformanceMap.clear();
-        mCryptoPerformanceMap.clear();
     }
 
     private void dumpHal(FileDescriptor fd, String[] args) {

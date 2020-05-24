@@ -16,7 +16,6 @@ package com.android.systemui;
 
 import android.annotation.Nullable;
 import android.app.INotificationManager;
-import android.content.Context;
 import android.content.res.Configuration;
 import android.hardware.SensorPrivacyManager;
 import android.hardware.display.NightDisplayListener;
@@ -48,7 +47,6 @@ import com.android.systemui.plugins.VolumeDialogController;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.power.EnhancedEstimates;
 import com.android.systemui.power.PowerUI;
-import com.android.systemui.privacy.PrivacyItemController;
 import com.android.systemui.recents.OverviewProxyService;
 import com.android.systemui.shared.plugins.PluginManager;
 import com.android.systemui.shared.system.ActivityManagerWrapper;
@@ -115,7 +113,6 @@ import com.android.systemui.util.leak.LeakReporter;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
-import java.util.HashMap;
 import java.util.function.Consumer;
 
 import javax.inject.Inject;
@@ -139,9 +136,7 @@ import dagger.Subcomponent;
  * they have no clients they should not have any registered resources like bound
  * services, registered receivers, etc.
  */
-public class Dependency extends SystemUI {
-    private static final String TAG = "Dependency";
-
+public class Dependency {
     /**
      * Key for getting a background Looper for background work.
      */
@@ -285,7 +280,6 @@ public class Dependency extends SystemUI {
     @Inject Lazy<SensorPrivacyManager> mSensorPrivacyManager;
     @Inject Lazy<AutoHideController> mAutoHideController;
     @Inject Lazy<ForegroundServiceNotificationListener> mForegroundServiceNotificationListener;
-    @Inject Lazy<PrivacyItemController> mPrivacyItemController;
     @Inject @Named(BG_LOOPER_NAME) Lazy<Looper> mBgLooper;
     @Inject @Named(BG_HANDLER_NAME) Lazy<Handler> mBgHandler;
     @Inject @Named(MAIN_HANDLER_NAME) Lazy<Handler> mMainHandler;
@@ -307,8 +301,20 @@ public class Dependency extends SystemUI {
     public Dependency() {
     }
 
-    @Override
-    public void start() {
+
+    /**
+     * Initialize Depenency.
+     */
+    public static void initDependencies(SystemUIRootComponent rootComponent) {
+        if (sDependency != null) {
+            return;
+        }
+        sDependency = new Dependency();
+        rootComponent.createDependency().createSystemUI(sDependency);
+        sDependency.start();
+    }
+
+    protected void start() {
         // TODO: Think about ways to push these creation rules out of Dependency to cut down
         // on imports.
         mProviders.put(TIME_TICK_HANDLER, mTimeTickHandler::get);
@@ -469,7 +475,6 @@ public class Dependency extends SystemUI {
         mProviders.put(ForegroundServiceNotificationListener.class,
                 mForegroundServiceNotificationListener::get);
         mProviders.put(ClockManager.class, mClockManager::get);
-        mProviders.put(PrivacyItemController.class, mPrivacyItemController::get);
         mProviders.put(ActivityManagerWrapper.class, mActivityManagerWrapper::get);
         mProviders.put(DevicePolicyManagerWrapper.class, mDevicePolicyManagerWrapper::get);
         mProviders.put(PackageManagerWrapper.class, mPackageManagerWrapper::get);
@@ -489,10 +494,14 @@ public class Dependency extends SystemUI {
         sDependency = this;
     }
 
-    @Override
-    public synchronized void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
-        super.dump(fd, pw, args);
+    static void staticDump(FileDescriptor fd, PrintWriter pw, String[] args) {
+        sDependency.dump(fd, pw, args);
+    }
 
+    /**
+     * {@see SystemUI.dump}
+     */
+    public synchronized void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
         // Make sure that the DumpController gets added to mDependencies, as they are only added
         // with Dependency#get.
         getDependency(DumpController.class);
@@ -512,9 +521,11 @@ public class Dependency extends SystemUI {
                 .forEach(o -> ((Dumpable) o).dump(fd, pw, args));
     }
 
-    @Override
+    protected static void staticOnConfigurationChanged(Configuration newConfig) {
+        sDependency.onConfigurationChanged(newConfig);
+    }
+
     protected synchronized void onConfigurationChanged(Configuration newConfig) {
-        super.onConfigurationChanged(newConfig);
         mDependencies.values().stream().filter(obj -> obj instanceof ConfigurationChangedReceiver)
                 .forEach(o -> ((ConfigurationChangedReceiver) o).onConfigurationChanged(newConfig));
     }
@@ -568,20 +579,6 @@ public class Dependency extends SystemUI {
     }
 
     /**
-     * Used in separate processes (like tuner settings) to init the dependencies.
-     */
-    public static void initDependencies(Context context) {
-        if (sDependency != null) return;
-        Dependency d = new Dependency();
-        SystemUIFactory.getInstance().getRootComponent()
-                .createDependency()
-                .createSystemUI(d);
-        d.mContext = context;
-        d.mComponents = new HashMap<>();
-        d.start();
-    }
-
-    /**
      * Used in separate process teardown to ensure the context isn't leaked.
      *
      * TODO: Remove once PreferenceFragment doesn't reference getActivity()
@@ -631,16 +628,5 @@ public class Dependency extends SystemUI {
     @Subcomponent
     public interface DependencyInjector {
         void createSystemUI(Dependency dependency);
-    }
-
-    public static class DependencyCreator implements Injector {
-        @Override
-        public SystemUI apply(Context context) {
-            Dependency dependency = new Dependency();
-            SystemUIFactory.getInstance().getRootComponent()
-                    .createDependency()
-                    .createSystemUI(dependency);
-            return dependency;
-        }
     }
 }

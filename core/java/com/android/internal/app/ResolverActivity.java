@@ -29,7 +29,6 @@ import android.app.ActivityThread;
 import android.app.VoiceInteractor.PickOptionRequest;
 import android.app.VoiceInteractor.PickOptionRequest.Option;
 import android.app.VoiceInteractor.Prompt;
-import android.app.role.RoleManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -111,7 +110,6 @@ public class ResolverActivity extends Activity {
     protected AbsListView mAdapterView;
     private Button mAlwaysButton;
     private Button mOnceButton;
-    private Button mSettingsButton;
     protected View mProfileView;
     private int mIconDpi;
     private int mLastSelected = AbsListView.INVALID_POSITION;
@@ -145,6 +143,10 @@ public class ResolverActivity extends Activity {
 
     /** See {@link #setRetainInOnStop}. */
     private boolean mRetainInOnStop;
+
+    private static final String EXTRA_SHOW_FRAGMENT_ARGS = ":settings:show_fragment_args";
+    private static final String EXTRA_FRAGMENT_ARG_KEY = ":settings:fragment_args_key";
+    private static final String OPEN_LINKS_COMPONENT_KEY = "app_link_state";
 
     private final PackageMonitor mPackageMonitor = createPackageMonitor();
 
@@ -196,9 +198,13 @@ public class ResolverActivity extends Activity {
 
         // titles for layout that deals with http(s) intents
         public static final int BROWSABLE_TITLE_RES =
-                com.android.internal.R.string.whichGiveAccessToApplication;
-        public static final int BROWSABLE_NAMED_TITLE_RES =
-                com.android.internal.R.string.whichGiveAccessToApplicationNamed;
+                com.android.internal.R.string.whichOpenLinksWith;
+        public static final int BROWSABLE_HOST_TITLE_RES =
+                com.android.internal.R.string.whichOpenHostLinksWith;
+        public static final int BROWSABLE_HOST_APP_TITLE_RES =
+                com.android.internal.R.string.whichOpenHostLinksWithApp;
+        public static final int BROWSABLE_APP_TITLE_RES =
+                com.android.internal.R.string.whichOpenLinksWithApp;
 
         public final String action;
         public final int titleRes;
@@ -322,9 +328,7 @@ public class ResolverActivity extends Activity {
                 ? false
                 : isHttpSchemeAndViewAction(getTargetIntent());
 
-        // We don't want to support Always Use if browsable layout is being used,
-        // as to mitigate Intent Capturing vulnerability
-        mSupportsAlwaysUseOption = supportsAlwaysUseOption && !mUseLayoutForBrowsables;
+        mSupportsAlwaysUseOption = supportsAlwaysUseOption;
 
         if (configureContentView(mIntents, initialIntents, rList)) {
             return;
@@ -357,9 +361,6 @@ public class ResolverActivity extends Activity {
 
         initSuspendedColorMatrix();
 
-        if (isVoiceInteraction()) {
-            onSetupVoiceInteraction();
-        }
         final Set<String> categories = intent.getCategories();
         MetricsLogger.action(this, mAdapter.hasFilteredItem()
                 ? MetricsProto.MetricsEvent.ACTION_SHOW_APP_DISAMBIG_APP_FEATURED
@@ -381,29 +382,46 @@ public class ResolverActivity extends Activity {
         finish();
     }
 
+    /**
+     * Numerous layouts are supported, each with optional ViewGroups.
+     * Make sure the inset gets added to the correct View, using
+     * a footer for Lists so it can properly scroll under the navbar.
+     */
+    protected boolean shouldAddFooterView() {
+        if (useLayoutWithDefault()) return true;
+
+        View buttonBar = findViewById(R.id.button_bar);
+        if (buttonBar == null || buttonBar.getVisibility() == View.GONE) return true;
+
+        return false;
+    }
+
     protected WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
         mSystemWindowInsets = insets.getSystemWindowInsets();
 
         mResolverDrawerLayout.setPadding(mSystemWindowInsets.left, mSystemWindowInsets.top,
                 mSystemWindowInsets.right, 0);
 
+        resetButtonBar();
+
+        // Need extra padding so the list can fully scroll up
+        if (shouldAddFooterView()) {
+            if (mFooterSpacer == null) {
+                mFooterSpacer = new Space(getApplicationContext());
+            } else {
+                ((ListView) mAdapterView).removeFooterView(mFooterSpacer);
+            }
+            mFooterSpacer.setLayoutParams(new AbsListView.LayoutParams(LayoutParams.MATCH_PARENT,
+                                                                       mSystemWindowInsets.bottom));
+            ((ListView) mAdapterView).addFooterView(mFooterSpacer);
+        }
+
         View emptyView = findViewById(R.id.empty);
         if (emptyView != null) {
             emptyView.setPadding(0, 0, 0, mSystemWindowInsets.bottom
-                    + getResources().getDimensionPixelSize(
-                            R.dimen.chooser_edge_margin_normal) * 2);
+                                 + getResources().getDimensionPixelSize(
+                                         R.dimen.chooser_edge_margin_normal) * 2);
         }
-
-        if (mFooterSpacer == null) {
-            mFooterSpacer = new Space(getApplicationContext());
-        } else {
-            ((ListView) mAdapterView).removeFooterView(mFooterSpacer);
-        }
-        mFooterSpacer.setLayoutParams(new AbsListView.LayoutParams(LayoutParams.MATCH_PARENT,
-                mSystemWindowInsets.bottom));
-        ((ListView) mAdapterView).addFooterView(mFooterSpacer);
-
-        resetButtonBar();
 
         return insets.consumeSystemWindowInsets();
     }
@@ -438,24 +456,21 @@ public class ResolverActivity extends Activity {
         mSuspendedMatrixColorFilter = new ColorMatrixColorFilter(matrix);
     }
 
-    /**
-     * Perform any initialization needed for voice interaction.
-     */
-    public void onSetupVoiceInteraction() {
-        // Do it right now. Subclasses may delay this and send it later.
-        sendVoiceChoicesIfNeeded();
-    }
-
     public void sendVoiceChoicesIfNeeded() {
         if (!isVoiceInteraction()) {
             // Clearly not needed.
             return;
         }
 
-
         final Option[] options = new Option[mAdapter.getCount()];
         for (int i = 0, N = options.length; i < N; i++) {
-            options[i] = optionForChooserTarget(mAdapter.getItem(i), i);
+            TargetInfo target = mAdapter.getItem(i);
+            if (target == null) {
+                // If this occurs, a new set of targets is being loaded. Let that complete,
+                // and have the next call to send voice choices proceed instead.
+                return;
+            }
+            options[i] = optionForChooserTarget(target, i);
         }
 
         mPickOptionRequest = new PickTargetOptionRequest(
@@ -554,10 +569,21 @@ public class ResolverActivity extends Activity {
         } else if (isHttpSchemeAndViewAction(intent)) {
             // If the Intent's scheme is http(s) then we need to warn the user that
             // they're giving access for the activity to open URLs from this specific host
-            return named
-                    ? getString(ActionTitle.BROWSABLE_NAMED_TITLE_RES, intent.getData().getHost(),
-                    mAdapter.getFilteredItem().getDisplayLabel())
-                    : getString(ActionTitle.BROWSABLE_TITLE_RES, intent.getData().getHost());
+            String dialogTitle = null;
+            if (named && !mUseLayoutForBrowsables) {
+                dialogTitle = getString(ActionTitle.BROWSABLE_APP_TITLE_RES,
+                        mAdapter.getFilteredItem().getDisplayLabel());
+            } else if (named && mUseLayoutForBrowsables) {
+                dialogTitle = getString(ActionTitle.BROWSABLE_HOST_APP_TITLE_RES,
+                        intent.getData().getHost(),
+                        mAdapter.getFilteredItem().getDisplayLabel());
+            } else if (mAdapter.areAllTargetsBrowsers()) {
+                dialogTitle = getString(ActionTitle.BROWSABLE_TITLE_RES);
+            } else {
+                dialogTitle = getString(ActionTitle.BROWSABLE_HOST_TITLE_RES,
+                        intent.getData().getHost());
+            }
+            return dialogTitle;
         } else {
             return named
                     ? getString(title.namedTitleRes, mAdapter.getFilteredItem().getDisplayLabel())
@@ -856,6 +882,13 @@ public class ResolverActivity extends Activity {
             } else {
                 enabled = true;
             }
+            if (mUseLayoutForBrowsables && !ri.handleAllWebDataURI) {
+                mAlwaysButton.setText(getResources()
+                        .getString(R.string.activity_resolver_set_always));
+            } else {
+                mAlwaysButton.setText(getResources()
+                        .getString(R.string.activity_resolver_use_always));
+            }
         }
         mAlwaysButton.setEnabled(enabled);
     }
@@ -866,26 +899,30 @@ public class ResolverActivity extends Activity {
                 ? mAdapter.getFilteredPosition()
                 : mAdapterView.getCheckedItemPosition();
         boolean hasIndexBeenFiltered = !mAdapter.hasFilteredItem();
-        if (id == R.id.button_app_settings) {
-            showSettingsForSelected(which, hasIndexBeenFiltered);
+        ResolveInfo ri = mAdapter.resolveInfoForPosition(which, hasIndexBeenFiltered);
+        if (mUseLayoutForBrowsables
+                && !ri.handleAllWebDataURI && id == R.id.button_always) {
+            showSettingsForSelected(ri);
         } else {
             startSelected(which, id == R.id.button_always, hasIndexBeenFiltered);
         }
     }
 
-    private void showSettingsForSelected(int which, boolean hasIndexBeenFiltered) {
-        ResolveInfo ri = mAdapter.resolveInfoForPosition(which, hasIndexBeenFiltered);
+    private void showSettingsForSelected(ResolveInfo ri) {
         Intent intent = new Intent();
-        // For browsers, we open the Default Browser page
+
+        final String packageName = ri.activityInfo.packageName;
+        Bundle showFragmentArgs = new Bundle();
+        showFragmentArgs.putString(EXTRA_FRAGMENT_ARG_KEY, OPEN_LINKS_COMPONENT_KEY);
+        showFragmentArgs.putString("package", packageName);
+
         // For regular apps, we open the Open by Default page
-        if (ri.handleAllWebDataURI) {
-            intent.setAction(Intent.ACTION_MANAGE_DEFAULT_APP)
-                    .putExtra(Intent.EXTRA_ROLE_NAME, RoleManager.ROLE_BROWSER);
-        } else {
-            intent.setAction(Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS)
-                    .setData(Uri.fromParts("package", ri.activityInfo.packageName, null))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT);
-        }
+        intent.setAction(Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS)
+                .setData(Uri.fromParts("package", packageName, null))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
+                .putExtra(EXTRA_FRAGMENT_ARG_KEY, OPEN_LINKS_COMPONENT_KEY)
+                .putExtra(EXTRA_SHOW_FRAGMENT_ARGS, showFragmentArgs);
+
         startActivity(intent);
     }
 
@@ -1284,6 +1321,7 @@ public class ResolverActivity extends Activity {
         // In case this method is called again (due to activity recreation), avoid adding a new
         // header if one is already present.
         if (useHeader && listView != null && listView.getHeaderViewsCount() == 0) {
+            listView.setHeaderDividersEnabled(true);
             listView.addHeaderView(LayoutInflater.from(this).inflate(
                     R.layout.resolver_different_item_header, listView, false));
         }
@@ -1326,47 +1364,23 @@ public class ResolverActivity extends Activity {
         final ViewGroup buttonLayout = findViewById(R.id.button_bar);
         if (buttonLayout != null) {
             buttonLayout.setVisibility(View.VISIBLE);
-            int inset = mSystemWindowInsets != null ? mSystemWindowInsets.bottom : 0;
-            buttonLayout.setPadding(buttonLayout.getPaddingLeft(), buttonLayout.getPaddingTop(),
-                    buttonLayout.getPaddingRight(), getResources().getDimensionPixelSize(
-                        R.dimen.resolver_button_bar_spacing) + inset);
 
+            if (!useLayoutWithDefault()) {
+                int inset = mSystemWindowInsets != null ? mSystemWindowInsets.bottom : 0;
+                buttonLayout.setPadding(buttonLayout.getPaddingLeft(), buttonLayout.getPaddingTop(),
+                        buttonLayout.getPaddingRight(), getResources().getDimensionPixelSize(
+                                R.dimen.resolver_button_bar_spacing) + inset);
+            }
             mOnceButton = (Button) buttonLayout.findViewById(R.id.button_once);
-            mSettingsButton = (Button) buttonLayout.findViewById(R.id.button_app_settings);
             mAlwaysButton = (Button) buttonLayout.findViewById(R.id.button_always);
 
-            if (mUseLayoutForBrowsables) {
-                resetSettingsOrOnceButtonBar();
-            } else {
-                resetAlwaysOrOnceButtonBar();
-            }
+            resetAlwaysOrOnceButtonBar();
         } else {
             Log.e(TAG, "Layout unexpectedly does not have a button bar");
         }
     }
 
-    private void resetSettingsOrOnceButtonBar() {
-        //unsetting always button
-        mAlwaysButton.setVisibility(View.GONE);
-
-        // When the items load in, if an item was already selected,
-        // enable the buttons
-        if (mAdapterView != null
-                && mAdapterView.getCheckedItemPosition() != ListView.INVALID_POSITION) {
-            mSettingsButton.setEnabled(true);
-            mOnceButton.setEnabled(true);
-        }
-    }
-
     private void resetAlwaysOrOnceButtonBar() {
-        // This check needs to be made because layout with default
-        // doesn't have a settings button
-        if (mSettingsButton != null) {
-            //unsetting always button
-            mSettingsButton.setVisibility(View.GONE);
-            mSettingsButton = null;
-        }
-
         if (useLayoutWithDefault()
                 && mAdapter.getFilteredPosition() != ListView.INVALID_POSITION) {
             setAlwaysButtonEnabled(true, mAdapter.getFilteredPosition(), false);
@@ -1413,6 +1427,7 @@ public class ResolverActivity extends Activity {
         private final Intent mResolvedIntent;
         private final List<Intent> mSourceIntents = new ArrayList<>();
         private boolean mIsSuspended;
+        private boolean mPinned = false;
 
         public DisplayResolveInfo(Intent originalIntent, ResolveInfo pri, CharSequence pLabel,
                 CharSequence pInfo, Intent pOrigIntent) {
@@ -1516,6 +1531,15 @@ public class ResolverActivity extends Activity {
         public boolean isSuspended() {
             return mIsSuspended;
         }
+
+        @Override
+        public boolean isPinned() {
+            return mPinned;
+        }
+
+        public void setPinned(boolean pinned) {
+            mPinned = pinned;
+        }
     }
 
     List<DisplayResolveInfo> getDisplayList() {
@@ -1616,6 +1640,11 @@ public class ResolverActivity extends Activity {
           * @return true if this target can be selected by the user
           */
         boolean isSuspended();
+
+        /**
+         * @return true if this target should be pinned to the front by the request of the user
+         */
+        boolean isPinned();
     }
 
     public class ResolveListAdapter extends BaseAdapter {
@@ -1626,6 +1655,7 @@ public class ResolverActivity extends Activity {
         private DisplayResolveInfo mOtherProfile;
         private ResolverListController mResolverListController;
         private int mPlaceholderCount;
+        private boolean mAllTargetsAreBrowsers = false;
 
         protected final LayoutInflater mInflater;
 
@@ -1701,6 +1731,14 @@ public class ResolverActivity extends Activity {
         }
 
         /**
+          * @return true if all items in the display list are defined as browsers by
+          *         ResolveInfo.handleAllWebDataURI
+          */
+        public boolean areAllTargetsBrowsers() {
+            return mAllTargetsAreBrowsers;
+        }
+
+        /**
          * Rebuild the list of resolvers. In some cases some parts will need some asynchronous work
          * to complete.
          *
@@ -1712,6 +1750,7 @@ public class ResolverActivity extends Activity {
             mOtherProfile = null;
             mLastChosen = null;
             mLastChosenPosition = -1;
+            mAllTargetsAreBrowsers = false;
             mDisplayList.clear();
             if (mBaseResolveList != null) {
                 currentResolveList = mUnfilteredResolveList = new ArrayList<>();
@@ -1812,6 +1851,8 @@ public class ResolverActivity extends Activity {
         private void processSortedList(List<ResolvedComponentInfo> sortedComponents) {
             int N;
             if (sortedComponents != null && (N = sortedComponents.size()) != 0) {
+                mAllTargetsAreBrowsers = mUseLayoutForBrowsables;
+
                 // First put the initial items at the top.
                 if (mInitialIntents != null) {
                     for (int i = 0; i < mInitialIntents.length; i++) {
@@ -1841,6 +1882,8 @@ public class ResolverActivity extends Activity {
                             ri.noResourceId = true;
                             ri.icon = 0;
                         }
+                        mAllTargetsAreBrowsers &= ri.handleAllWebDataURI;
+
                         addResolveInfo(new DisplayResolveInfo(ii, ri,
                                 ri.loadLabel(getPackageManager()), null, ii));
                     }
@@ -1850,13 +1893,15 @@ public class ResolverActivity extends Activity {
                 for (ResolvedComponentInfo rci : sortedComponents) {
                     final ResolveInfo ri = rci.getResolveInfoAt(0);
                     if (ri != null) {
+                        mAllTargetsAreBrowsers &= ri.handleAllWebDataURI;
+
                         ResolveInfoPresentationGetter pg = makePresentationGetter(ri);
                         addResolveInfoWithAlternates(rci, pg.getSubLabel(), pg.getLabel());
                     }
                 }
             }
 
-
+            sendVoiceChoicesIfNeeded();
             postListReadyRunnable();
         }
 
@@ -1906,6 +1951,10 @@ public class ResolverActivity extends Activity {
             final Intent replaceIntent = getReplacementIntent(add.activityInfo, intent);
             final DisplayResolveInfo dri = new DisplayResolveInfo(intent, add, roLabel,
                     extraInfo, replaceIntent);
+            dri.setPinned(rci.isPinned());
+            if (rci.isPinned()) {
+                Log.i(TAG, "Pinned item: " + rci.name);
+            }
             addResolveInfo(dri);
             if (replaceIntent == intent) {
                 // Only add alternates if we didn't get a specific replacement from
@@ -2047,7 +2096,9 @@ public class ResolverActivity extends Activity {
             CharSequence subLabel = info.getExtendedInfo();
             if (TextUtils.equals(label, subLabel)) subLabel = null;
 
-            if (!TextUtils.equals(holder.text2.getText(), subLabel)) {
+            if (!TextUtils.equals(holder.text2.getText(), subLabel)
+                    && !TextUtils.isEmpty(subLabel)) {
+                holder.text2.setVisibility(View.VISIBLE);
                 holder.text2.setText(subLabel);
             }
 
@@ -2072,6 +2123,7 @@ public class ResolverActivity extends Activity {
         public final ComponentName name;
         private final List<Intent> mIntents = new ArrayList<>();
         private final List<ResolveInfo> mResolveInfos = new ArrayList<>();
+        private boolean mPinned;
 
         public ResolvedComponentInfo(ComponentName name, Intent intent, ResolveInfo info) {
             this.name = name;
@@ -2112,6 +2164,15 @@ public class ResolverActivity extends Activity {
             }
             return -1;
         }
+
+        public boolean isPinned() {
+            return mPinned;
+        }
+
+        public void setPinned(boolean pinned) {
+            mPinned = pinned;
+        }
+
     }
 
     static class ViewHolder {
@@ -2152,14 +2213,8 @@ public class ResolverActivity extends Activity {
             final boolean hasValidSelection = checkedPos != ListView.INVALID_POSITION;
             if (!useLayoutWithDefault()
                     && (!hasValidSelection || mLastSelected != checkedPos)
-                    && (mAlwaysButton != null || mSettingsButton != null)) {
-                if (mSettingsButton != null) {
-                    // this implies that the layout for browsables is being used
-                    mSettingsButton.setEnabled(true);
-                } else {
-                    // this implies that mAlwaysButton != null
-                    setAlwaysButtonEnabled(hasValidSelection, checkedPos, true);
-                }
+                    && mAlwaysButton != null) {
+                setAlwaysButtonEnabled(hasValidSelection, checkedPos, true);
                 mOnceButton.setEnabled(hasValidSelection);
                 if (hasValidSelection) {
                     mAdapterView.smoothScrollToPosition(checkedPos);

@@ -53,6 +53,7 @@ import android.os.SystemClock;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
+import android.security.KeyStore;
 import android.service.trust.TrustAgentService;
 import android.text.TextUtils;
 import android.util.ArrayMap;
@@ -135,6 +136,33 @@ public class TrustManagerService extends SystemService {
     @GuardedBy("mUserIsTrusted")
     private final SparseBooleanArray mUserIsTrusted = new SparseBooleanArray();
 
+    /**
+     * Stores the locked state for users on the device. There are three different type of users
+     * which are handled slightly differently:
+     * <ul>
+     *  <li> Users with real keyguard
+     *  These are users who can be switched to ({@link UserInfo#supportsSwitchToByUser()}). Their
+     *  locked state is derived by a combination of user secure state, keyguard state, trust agent
+     *  decision and biometric authentication result. These are updated via
+     *  {@link #refreshDeviceLockedForUser(int)} and result stored in {@link #mDeviceLockedForUser}.
+     *  <li> Managed profiles with unified challenge
+     *  Managed profile with unified challenge always shares the same locked state as their parent,
+     *  so their locked state is not recorded in  {@link #mDeviceLockedForUser}. Instead,
+     *  {@link ITrustManager#isDeviceLocked(int)} always resolves their parent user handle and
+     *  queries its locked state instead.
+     *  <li> Managed profiles with separate challenge
+     *  Locked state for profile with separate challenge is determined by other parts of the
+     *  framework (mostly PowerManager) and pushed to TrustManagerService via
+     *  {@link ITrustManager#setDeviceLockedForUser(int, boolean)}. Although in a corner case when
+     *  the profile has a separate but empty challenge, setting its {@link #mDeviceLockedForUser} to
+     *  {@code false} is actually done by {@link #refreshDeviceLockedForUser(int)}.
+     * </ul>
+     * TODO: Rename {@link ITrustManager#setDeviceLockedForUser(int, boolean)} to
+     * {@code setDeviceLockedForProfile} to better reflect its purpose. Unifying
+     * {@code setDeviceLockedForProfile} and {@link #setDeviceLockedForUser} would also be nice.
+     * At the moment they both update {@link #mDeviceLockedForUser} but have slightly different
+     * side-effects: one notifies trust agents while the other sends out a broadcast.
+     */
     @GuardedBy("mDeviceLockedForUser")
     private final SparseBooleanArray mDeviceLockedForUser = new SparseBooleanArray();
 
@@ -199,6 +227,7 @@ public class TrustManagerService extends SystemService {
         private final Uri LOCK_SCREEN_WHEN_TRUST_LOST =
                 Settings.Secure.getUriFor(Settings.Secure.LOCK_SCREEN_WHEN_TRUST_LOST);
 
+        private final boolean mIsAutomotive;
         private final ContentResolver mContentResolver;
         private boolean mTrustAgentsExtendUnlock;
         private boolean mLockWhenTrustLost;
@@ -210,6 +239,10 @@ public class TrustManagerService extends SystemService {
          */
         SettingsObserver(Handler handler) {
             super(handler);
+
+            PackageManager packageManager = getContext().getPackageManager();
+            mIsAutomotive = packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE);
+
             mContentResolver = getContext().getContentResolver();
             updateContentObserver();
         }
@@ -233,11 +266,15 @@ public class TrustManagerService extends SystemService {
         @Override
         public void onChange(boolean selfChange, Uri uri) {
             if (TRUST_AGENTS_EXTEND_UNLOCK.equals(uri)) {
+                // Smart lock should only extend unlock. The only exception is for automotive,
+                // where it can actively unlock the head unit.
+                int defaultValue = mIsAutomotive ? 0 : 1;
+
                 mTrustAgentsExtendUnlock =
                         Settings.Secure.getIntForUser(
                                 mContentResolver,
                                 Settings.Secure.TRUST_AGENTS_EXTEND_UNLOCK,
-                                1 /* default */,
+                                defaultValue,
                                 mCurrentUser) != 0;
             } else if (LOCK_SCREEN_WHEN_TRUST_LOST.equals(uri)) {
                 mLockWhenTrustLost =
@@ -592,6 +629,10 @@ public class TrustManagerService extends SystemService {
         }
     }
 
+    /**
+     * Update the user's locked state. Only applicable to users with a real keyguard
+     * ({@link UserInfo#supportsSwitchToByUser}) and unsecured managed profiles.
+     */
     private void refreshDeviceLockedForUser(int userId) {
         if (userId != UserHandle.USER_ALL && userId < UserHandle.USER_SYSTEM) {
             Log.e(TAG, "refreshDeviceLockedForUser(userId=" + userId + "): Invalid user handle,"
@@ -652,6 +693,15 @@ public class TrustManagerService extends SystemService {
         }
         if (changed) {
             dispatchDeviceLocked(userId, locked);
+
+            KeyStore.getInstance().onUserLockedStateChanged(userId, locked);
+            // Also update the user's profiles who have unified challenge, since they
+            // share the same unlocked state (see {@link #isDeviceLocked(int)})
+            for (int profileHandle : mUserManager.getEnabledProfileIds(userId)) {
+                if (mLockPatternUtils.isManagedProfileWithUnifiedChallenge(profileHandle)) {
+                    KeyStore.getInstance().onUserLockedStateChanged(profileHandle, locked);
+                }
+            }
         }
     }
 
@@ -1185,6 +1235,10 @@ public class TrustManagerService extends SystemService {
             return "0x" + Integer.toHexString(i);
         }
 
+        /**
+         * Changes the lock status for the given user. This is only applicable to managed profiles,
+         * other users should be handled by Keyguard.
+         */
         @Override
         public void setDeviceLockedForUser(int userId, boolean locked) {
             enforceReportPermission();
@@ -1195,6 +1249,9 @@ public class TrustManagerService extends SystemService {
                     synchronized (mDeviceLockedForUser) {
                         mDeviceLockedForUser.put(userId, locked);
                     }
+
+                    KeyStore.getInstance().onUserLockedStateChanged(userId, locked);
+
                     if (locked) {
                         try {
                             ActivityManager.getService().notifyLockedProfile(userId);

@@ -111,6 +111,9 @@ public abstract class BiometricDialogView extends LinearLayout {
     protected boolean mRequireConfirmation;
     private int mUserId; // used to determine if we should show work background
 
+    private boolean mCompletedAnimatingIn;
+    private boolean mPendingDismissDialog;
+
     protected abstract int getHintStringResourceId();
     protected abstract int getAuthenticatedAccessibilityResourceId();
     protected abstract int getIconDescriptionResourceId();
@@ -282,6 +285,7 @@ public abstract class BiometricDialogView extends LinearLayout {
 
         if (mRestoredState == null) {
             updateState(STATE_AUTHENTICATING);
+            mNegativeButton.setText(mBundle.getCharSequence(BiometricPrompt.KEY_NEGATIVE_TEXT));
             final int hint = getHintStringResourceId();
             if (hint != 0) {
                 mErrorText.setText(hint);
@@ -319,8 +323,6 @@ public abstract class BiometricDialogView extends LinearLayout {
             mDescriptionText.setText(descriptionText);
         }
 
-        mNegativeButton.setText(mBundle.getCharSequence(BiometricPrompt.KEY_NEGATIVE_TEXT));
-
         if (requiresConfirmation() && mRestoredState == null) {
             mPositiveButton.setVisibility(View.VISIBLE);
             mPositiveButton.setEnabled(false);
@@ -333,6 +335,7 @@ public abstract class BiometricDialogView extends LinearLayout {
             mDialog.setAlpha(1.0f);
             mDialog.setTranslationY(0);
             mLayout.setAlpha(1.0f);
+            mCompletedAnimatingIn = true;
         } else {
             // Dim the background and slide the dialog up
             mDialog.setTranslationY(mAnimationTranslationOffset);
@@ -353,6 +356,12 @@ public abstract class BiometricDialogView extends LinearLayout {
     }
 
     public void startDismiss() {
+        if (!mCompletedAnimatingIn) {
+            Log.w(TAG, "startDismiss(): waiting for onDialogAnimatedIn");
+            mPendingDismissDialog = true;
+            return;
+        }
+
         mAnimatingAway = true;
 
         // This is where final cleanup should occur.
@@ -474,6 +483,8 @@ public abstract class BiometricDialogView extends LinearLayout {
             mHandler.removeMessages(MSG_RESET_MESSAGE);
             mErrorText.setTextColor(mTextColor);
             mErrorText.setText(R.string.biometric_dialog_tap_confirm);
+            mErrorText.setContentDescription(
+                    getResources().getString(R.string.biometric_dialog_tap_confirm));
             mErrorText.setVisibility(View.VISIBLE);
             announceAccessibilityEvent();
             mPositiveButton.setVisibility(View.VISIBLE);
@@ -487,6 +498,9 @@ public abstract class BiometricDialogView extends LinearLayout {
 
         if (newState == STATE_PENDING_CONFIRMATION || newState == STATE_AUTHENTICATED) {
             mNegativeButton.setText(R.string.cancel);
+            mNegativeButton.setContentDescription(getResources().getString(R.string.cancel));
+        } else {
+            mNegativeButton.setText(mBundle.getCharSequence(BiometricPrompt.KEY_NEGATIVE_TEXT));
         }
 
         updateIcon(mState, newState);
@@ -497,6 +511,13 @@ public abstract class BiometricDialogView extends LinearLayout {
     }
 
     public void onDialogAnimatedIn() {
+        mCompletedAnimatingIn = true;
+
+        if (mPendingDismissDialog) {
+            Log.d(TAG, "onDialogAnimatedIn(): mPendingDismissDialog=true, dismissing now");
+            startDismiss();
+            mPendingDismissDialog = false;
+        }
     }
 
     public void restoreState(Bundle bundle) {

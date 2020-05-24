@@ -30,6 +30,7 @@ import com.android.internal.colorextraction.ColorExtractor;
 import com.android.internal.colorextraction.ColorExtractor.OnColorsChangedListener;
 import com.android.keyguard.clock.ClockManager;
 import com.android.systemui.Interpolators;
+import com.android.systemui.R;
 import com.android.systemui.colorextraction.SysuiColorExtractor;
 import com.android.systemui.plugins.ClockPlugin;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
@@ -50,6 +51,7 @@ import javax.inject.Named;
 public class KeyguardClockSwitch extends RelativeLayout {
 
     private static final String TAG = "KeyguardClockSwitch";
+    private static final boolean CUSTOM_CLOCKS_ENABLED = false;
 
     /**
      * Animation fraction when text is transitioned to/from bold.
@@ -198,7 +200,9 @@ public class KeyguardClockSwitch extends RelativeLayout {
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
-        mClockManager.addOnClockChangedListener(mClockChangedListener);
+        if (CUSTOM_CLOCKS_ENABLED) {
+            mClockManager.addOnClockChangedListener(mClockChangedListener);
+        }
         mStatusBarStateController.addCallback(mStateListener);
         mSysuiColorExtractor.addOnColorsChangedListener(mColorsListener);
         updateColors();
@@ -207,7 +211,9 @@ public class KeyguardClockSwitch extends RelativeLayout {
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
-        mClockManager.removeOnClockChangedListener(mClockChangedListener);
+        if (CUSTOM_CLOCKS_ENABLED) {
+            mClockManager.removeOnClockChangedListener(mClockChangedListener);
+        }
         mStatusBarStateController.removeCallback(mStateListener);
         mSysuiColorExtractor.removeOnColorsChangedListener(mColorsListener);
         setClockPlugin(null);
@@ -579,6 +585,9 @@ public class KeyguardClockSwitch extends RelativeLayout {
         @Override
         public Animator onAppear(ViewGroup sceneRoot, View view, TransitionValues startValues,
                 TransitionValues endValues) {
+            if (!sceneRoot.isShown()) {
+                return null;
+            }
             final float cutoff = mCutoff;
             final int startVisibility = View.INVISIBLE;
             final int endVisibility = (int) endValues.values.get(PROPNAME_VISIBILITY);
@@ -591,6 +600,9 @@ public class KeyguardClockSwitch extends RelativeLayout {
         @Override
         public Animator onDisappear(ViewGroup sceneRoot, View view, TransitionValues startValues,
                 TransitionValues endValues) {
+            if (!sceneRoot.isShown()) {
+                return null;
+            }
             final float cutoff = 1f - mCutoff;
             final int startVisibility = View.VISIBLE;
             final int endVisibility = (int) endValues.values.get(PROPNAME_VISIBILITY);

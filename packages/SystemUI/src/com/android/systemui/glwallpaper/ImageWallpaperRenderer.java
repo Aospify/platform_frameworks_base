@@ -24,6 +24,7 @@ import static android.opengl.GLES20.glViewport;
 
 import android.app.WallpaperManager;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.util.Log;
@@ -45,6 +46,7 @@ public class ImageWallpaperRenderer implements GLWallpaperRenderer,
     private static final String TAG = ImageWallpaperRenderer.class.getSimpleName();
     private static final float SCALE_VIEWPORT_MIN = 1f;
     private static final float SCALE_VIEWPORT_MAX = 1.1f;
+    private static final boolean DEBUG = true;
 
     private final WallpaperManager mWallpaperManager;
     private final ImageGLProgram mProgram;
@@ -70,7 +72,14 @@ public class ImageWallpaperRenderer implements GLWallpaperRenderer,
         DisplayInfo displayInfo = new DisplayInfo();
         WindowManager wm = context.getSystemService(WindowManager.class);
         wm.getDefaultDisplay().getDisplayInfo(displayInfo);
-        mScissor = new Rect(0, 0, displayInfo.logicalWidth, displayInfo.logicalHeight);
+
+        // We only do transition in portrait currently, b/137962047.
+        int orientation = context.getResources().getConfiguration().orientation;
+        if (orientation == Configuration.ORIENTATION_PORTRAIT) {
+            mScissor = new Rect(0, 0, displayInfo.logicalWidth, displayInfo.logicalHeight);
+        } else {
+            mScissor = new Rect(0, 0, displayInfo.logicalHeight, displayInfo.logicalWidth);
+        }
 
         mProxy = proxy;
         mProgram = new ImageGLProgram(context);
@@ -99,12 +108,23 @@ public class ImageWallpaperRenderer implements GLWallpaperRenderer,
     }
 
     private boolean loadBitmap() {
+        if (DEBUG) {
+            Log.d(TAG, "loadBitmap: mBitmap=" + mBitmap);
+        }
         if (mWallpaperManager != null && mBitmap == null) {
             mBitmap = mWallpaperManager.getBitmap();
             mWallpaperManager.forgetLoadedWallpaper();
             if (mBitmap != null) {
-                mSurfaceSize.set(0, 0, mBitmap.getWidth(), mBitmap.getHeight());
+                float scale = (float) mScissor.height() / mBitmap.getHeight();
+                int surfaceHeight = Math.max(mScissor.height(), mBitmap.getHeight());
+                int surfaceWidth = scale > 1f
+                        ? Math.round(mBitmap.getWidth() * scale)
+                        : mBitmap.getWidth();
+                mSurfaceSize.set(0, 0, surfaceWidth, surfaceHeight);
             }
+        }
+        if (DEBUG) {
+            Log.d(TAG, "loadBitmap done, surface size=" + mSurfaceSize);
         }
         return mBitmap != null;
     }
@@ -179,21 +199,41 @@ public class ImageWallpaperRenderer implements GLWallpaperRenderer,
     }
 
     @Override
-    public void onRevealStart() {
-        mScissorMode = true;
-        // Use current display area of texture.
-        mWallpaper.adjustTextureCoordinates(mSurfaceSize, mScissor, mXOffset, mYOffset);
+    public void onRevealStart(boolean animate) {
+        if (DEBUG) {
+            Log.v(TAG, "onRevealStart: start, anim=" + animate);
+        }
+
+        if (animate) {
+            mScissorMode = true;
+            // Use current display area of texture.
+            mWallpaper.adjustTextureCoordinates(mSurfaceSize, mScissor, mXOffset, mYOffset);
+        }
         mProxy.preRender();
+
+        if (DEBUG) {
+            Log.v(TAG, "onRevealStart: done");
+        }
     }
 
     @Override
     public void onRevealEnd() {
-        mScissorMode = false;
-        // reset texture coordinates to use full texture.
-        mWallpaper.adjustTextureCoordinates(null, null, 0, 0);
-        // We need draw full texture back before finishing render.
-        mProxy.requestRender();
+        if (DEBUG) {
+            Log.v(TAG, "onRevealEnd: start, mScissorMode=" + mScissorMode);
+        }
+
+        if (mScissorMode) {
+            mScissorMode = false;
+            // reset texture coordinates to use full texture.
+            mWallpaper.adjustTextureCoordinates(null, null, 0, 0);
+            // We need draw full texture back before finishing render.
+            mProxy.requestRender();
+        }
         mProxy.postRender();
+
+        if (DEBUG) {
+            Log.v(TAG, "onRevealEnd: done");
+        }
     }
 
     @Override
@@ -206,6 +246,7 @@ public class ImageWallpaperRenderer implements GLWallpaperRenderer,
         out.print(prefix); out.print("mXOffset="); out.print(mXOffset);
         out.print(prefix); out.print("mYOffset="); out.print(mYOffset);
         out.print(prefix); out.print("threshold="); out.print(mImageProcessHelper.getThreshold());
+        out.print(prefix); out.print("mReveal="); out.print(mImageRevealHelper.getReveal());
         mWallpaper.dump(prefix, fd, out, args);
     }
 }

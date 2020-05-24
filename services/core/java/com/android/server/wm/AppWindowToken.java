@@ -206,6 +206,7 @@ class AppWindowToken extends WindowToken implements WindowManagerService.AppFree
     boolean removed;
 
     // Information about an application starting window if displayed.
+    // Note: these are de-referenced before the starting window animates away.
     StartingData mStartingData;
     WindowState startingWindow;
     StartingSurface startingSurface;
@@ -545,10 +546,14 @@ class AppWindowToken extends WindowToken implements WindowManagerService.AppFree
                     // Let's reset the draw state in order to prevent the starting window to be
                     // immediately dismissed when the app still has the surface.
                     forAllWindows(w -> {
-                            if (w.mWinAnimator.mDrawState == HAS_DRAWN) {
-                                w.mWinAnimator.resetDrawState();
-                            }
-                        },  true /* traverseTopToBottom */);
+                        if (w.mWinAnimator.mDrawState == HAS_DRAWN) {
+                            w.mWinAnimator.resetDrawState();
+
+                            // Force add to mResizingWindows, so that we are guaranteed to get
+                            // another reportDrawn callback.
+                            w.resetLastContentInsets();
+                        }
+                    },  true /* traverseTopToBottom */);
                 }
             }
 
@@ -1239,6 +1244,21 @@ class AppWindowToken extends WindowToken implements WindowManagerService.AppFree
         return true;
     }
 
+    /**
+     * @return {@code true} if starting window is in app's hierarchy.
+     */
+    boolean hasStartingWindow() {
+        if (startingDisplayed || mStartingData != null) {
+            return true;
+        }
+        for (int i = mChildren.size() - 1; i >= 0; i--) {
+            if (getChildAt(i).mAttrs.type == TYPE_APPLICATION_STARTING) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override
     void addWindow(WindowState w) {
         super.addWindow(w);
@@ -1332,7 +1352,13 @@ class AppWindowToken extends WindowToken implements WindowManagerService.AppFree
             return;
         }
 
-        prevDc.mOpeningApps.remove(this);
+        if (prevDc.mOpeningApps.remove(this)) {
+            // Transfer opening transition to new display.
+            mDisplayContent.mOpeningApps.add(this);
+            mDisplayContent.prepareAppTransition(prevDc.mAppTransition.getAppTransition(), true);
+            mDisplayContent.executeAppTransition();
+        }
+
         if (prevDc.mChangingApps.remove(this)) {
             // This gets called *after* the AppWindowToken has been reparented to the new display.
             // That reparenting resulted in this window changing modes (eg. FREEFORM -> FULLSCREEN),
@@ -2467,7 +2493,7 @@ class AppWindowToken extends WindowToken implements WindowManagerService.AppFree
         // transformed the task.
         final RecentsAnimationController controller = mWmService.getRecentsAnimationController();
         if (controller != null && controller.isAnimatingTask(getTask())
-                && controller.shouldCancelWithDeferredScreenshot()) {
+                && controller.shouldDeferCancelUntilNextTransition()) {
             return false;
         }
 

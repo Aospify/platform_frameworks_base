@@ -108,6 +108,8 @@ interface INotificationManager
     ParceledListSlice getNotificationChannelsBypassingDnd(String pkg, int userId);
     boolean isPackagePaused(String pkg);
 
+    void silenceNotificationSound();
+
     // TODO: Remove this when callers have been migrated to the equivalent
     // INotificationListener method.
     @UnsupportedAppUsage
@@ -200,4 +202,6 @@ interface INotificationManager
 
     void setPrivateNotificationsAllowed(boolean allow);
     boolean getPrivateNotificationsAllowed();
+
+    long pullStats(long startNs, int report, boolean doAgg, out List<ParcelFileDescriptor> stats);
 }

@@ -272,6 +272,7 @@ import android.os.storage.IStorageManager;
 import android.os.storage.StorageManager;
 import android.provider.DeviceConfig;
 import android.provider.Settings;
+import android.provider.DeviceConfig.Properties;
 import android.server.ServerProtoEnums;
 import android.sysprop.VoldProperties;
 import android.text.TextUtils;
@@ -356,6 +357,7 @@ import com.android.server.uri.GrantUri;
 import com.android.server.uri.UriGrantsManagerInternal;
 import com.android.server.utils.PriorityDump;
 import com.android.server.vr.VrManagerInternal;
+import com.android.server.wm.ActivityMetricsLaunchObserver;
 import com.android.server.wm.ActivityServiceConnectionsHolder;
 import com.android.server.wm.ActivityTaskManagerInternal;
 import com.android.server.wm.ActivityTaskManagerService;
@@ -392,6 +394,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiFunction;
 
@@ -861,6 +864,51 @@ public class ActivityManagerService extends IActivityManager.Stub
      */
     final ArrayList<ProcessRecord> mPendingPssProcesses = new ArrayList<ProcessRecord>();
 
+    /**
+     * Depth of overlapping activity-start PSS deferral notes
+     */
+    private final AtomicInteger mActivityStartingNesting = new AtomicInteger(0);
+
+    private final ActivityMetricsLaunchObserver mActivityLaunchObserver =
+            new ActivityMetricsLaunchObserver() {
+        @Override
+        public void onActivityLaunched(byte[] activity, int temperature) {
+            // This is safe to force to the head of the queue because it relies only
+            // on refcounting to track begin/end of deferrals, not on actual
+            // message ordering.  We don't care *what* activity is being
+            // launched; only that we're doing so.
+            if (mPssDeferralTime > 0) {
+                final Message msg = mBgHandler.obtainMessage(DEFER_PSS_MSG);
+                mBgHandler.sendMessageAtFrontOfQueue(msg);
+            }
+        }
+
+        // The other observer methods are unused
+        @Override
+        public void onIntentStarted(Intent intent) {
+        }
+
+        @Override
+        public void onIntentFailed() {
+        }
+
+        @Override
+        public void onActivityLaunchCancelled(byte[] abortingActivity) {
+        }
+
+        @Override
+        public void onActivityLaunchFinished(byte[] finalActivity) {
+        }
+    };
+
+    /**
+     * How long we defer PSS gathering while activities are starting, in milliseconds.
+     * This is adjustable via DeviceConfig.  If it is zero or negative, no PSS deferral
+     * is done.
+     */
+    private volatile long mPssDeferralTime = 0;
+    private static final String ACTIVITY_START_PSS_DEFER_CONFIG = "activity_start_pss_defer";
+
     private boolean mBinderTransactionTrackingEnabled = false;
 
     /**
@@ -874,6 +922,20 @@ public class ActivityManagerService extends IActivityManager.Stub
      */
     boolean mFullPssPending = false;
 
+    /**
+     * Observe DeviceConfig changes to the PSS calculation interval
+     */
+    private final DeviceConfig.OnPropertiesChangedListener mPssDelayConfigListener =
+            new DeviceConfig.OnPropertiesChangedListener() {
+                @Override
+                public void onPropertiesChanged(Properties properties) {
+                    mPssDeferralTime = properties.getLong(ACTIVITY_START_PSS_DEFER_CONFIG, 0);
+                    if (DEBUG_PSS) {
+                        Slog.d(TAG_PSS, "Activity-start PSS delay now "
+                                + mPssDeferralTime + " ms");
+                    }
+                }
+            };
 
     /**
      * This is for verifying the UID report flow.
@@ -1838,6 +1900,8 @@ public class ActivityManagerService extends IActivityManager.Stub
     }
 
     static final int COLLECT_PSS_BG_MSG = 1;
+    static final int DEFER_PSS_MSG = 2;
+    static final int STOP_DEFERRING_PSS_MSG = 3;
 
     final Handler mBgHandler = new Handler(BackgroundThread.getHandler().getLooper()) {
         @Override
@@ -1945,6 +2009,30 @@ public class ActivityManagerService extends IActivityManager.Stub
                     }
                 } while (true);
             }
+
+            case DEFER_PSS_MSG: {
+                deferPssForActivityStart();
+            } break;
+
+            case STOP_DEFERRING_PSS_MSG: {
+                final int nesting = mActivityStartingNesting.decrementAndGet();
+                if (nesting <= 0) {
+                    if (DEBUG_PSS) {
+                        Slog.d(TAG_PSS, "PSS activity start deferral interval ended; now "
+                                + nesting);
+                    }
+                    if (nesting < 0) {
+                        Slog.wtf(TAG, "Activity start nesting undercount!");
+                        mActivityStartingNesting.incrementAndGet();
+                    }
+                } else {
+                    if (DEBUG_PSS) {
+                        Slog.d(TAG_PSS, "Still deferring PSS, nesting=" + nesting);
+                    }
+                }
+            }
+            break;
+
             }
         }
     };
@@ -3480,7 +3568,7 @@ public class ActivityManagerService extends IActivityManager.Stub
 
     @Override
     public void crashApplication(int uid, int initialPid, String packageName, int userId,
-            String message) {
+            String message, boolean force) {
         if (checkCallingPermission(android.Manifest.permission.FORCE_STOP_PACKAGES)
                 != PackageManager.PERMISSION_GRANTED) {
             String msg = "Permission Denial: crashApplication() from pid="
@@ -3492,7 +3580,8 @@ public class ActivityManagerService extends IActivityManager.Stub
         }
 
         synchronized(this) {
-            mAppErrors.scheduleAppCrashLocked(uid, initialPid, packageName, userId, message);
+            mAppErrors.scheduleAppCrashLocked(uid, initialPid, packageName, userId,
+                    message, force);
         }
     }
 
@@ -3694,9 +3783,7 @@ public class ActivityManagerService extends IActivityManager.Stub
             ArrayList<Integer> nativePids) {
         ArrayList<Integer> extraPids = null;
 
-        if (DEBUG_ANR) {
-            Slog.d(TAG, "dumpStackTraces pids=" + lastPids + " nativepids=" + nativePids);
-        }
+        Slog.i(TAG, "dumpStackTraces pids=" + lastPids + " nativepids=" + nativePids);
 
         // Measure CPU usage as soon as we're called in order to get a realistic sampling
         // of the top users at the time of the request.
@@ -3718,8 +3805,8 @@ public class ActivityManagerService extends IActivityManager.Stub
                     if (DEBUG_ANR) Slog.d(TAG, "Collecting stacks for extra pid " + stats.pid);
 
                     extraPids.add(stats.pid);
-                } else if (DEBUG_ANR) {
-                    Slog.d(TAG, "Skipping next CPU consuming process, not a java proc: "
+                } else {
+                    Slog.i(TAG, "Skipping next CPU consuming process, not a java proc: "
                             + stats.pid);
                 }
             }
@@ -3736,9 +3823,6 @@ public class ActivityManagerService extends IActivityManager.Stub
         File tracesFile = createAnrDumpFile(tracesDir);
         if (tracesFile == null) {
             return null;
-        }
-        if (DEBUG_ANR) {
-            Slog.d(TAG, "Dumping to " + tracesFile.getAbsolutePath());
         }
 
         dumpStackTraces(tracesFile.getAbsolutePath(), firstPids, nativePids, extraPids);
@@ -3832,6 +3916,8 @@ public class ActivityManagerService extends IActivityManager.Stub
     public static void dumpStackTraces(String tracesFile, ArrayList<Integer> firstPids,
             ArrayList<Integer> nativePids, ArrayList<Integer> extraPids) {
 
+        Slog.i(TAG, "Dumping to " + tracesFile);
+
         // We don't need any sort of inotify based monitoring when we're dumping traces via
         // tombstoned. Data is piped to an "intercept" FD installed in tombstoned so we're in full
         // control of all writes to the file in question.
@@ -3843,7 +3929,7 @@ public class ActivityManagerService extends IActivityManager.Stub
         if (firstPids != null) {
             int num = firstPids.size();
             for (int i = 0; i < num; i++) {
-                if (DEBUG_ANR) Slog.d(TAG, "Collecting stacks for pid " + firstPids.get(i));
+                Slog.i(TAG, "Collecting stacks for pid " + firstPids.get(i));
                 final long timeTaken = dumpJavaTracesTombstoned(firstPids.get(i), tracesFile,
                                                                 remainingTime);
 
@@ -3863,7 +3949,7 @@ public class ActivityManagerService extends IActivityManager.Stub
         // Next collect the stacks of the native pids
         if (nativePids != null) {
             for (int pid : nativePids) {
-                if (DEBUG_ANR) Slog.d(TAG, "Collecting stacks for native pid " + pid);
+                Slog.i(TAG, "Collecting stacks for native pid " + pid);
                 final long nativeDumpTimeoutMs = Math.min(NATIVE_DUMP_TIMEOUT_MS, remainingTime);
 
                 final long start = SystemClock.elapsedRealtime();
@@ -3887,7 +3973,7 @@ public class ActivityManagerService extends IActivityManager.Stub
         // Lastly, dump stacks for all extra PIDs from the CPU tracker.
         if (extraPids != null) {
             for (int pid : extraPids) {
-                if (DEBUG_ANR) Slog.d(TAG, "Collecting stacks for extra pid " + pid);
+                Slog.i(TAG, "Collecting stacks for extra pid " + pid);
 
                 final long timeTaken = dumpJavaTracesTombstoned(pid, tracesFile, remainingTime);
 
@@ -3903,6 +3989,7 @@ public class ActivityManagerService extends IActivityManager.Stub
                 }
             }
         }
+        Slog.i(TAG, "Done dumping");
     }
 
     @Override
@@ -4673,7 +4760,7 @@ public class ActivityManagerService extends IActivityManager.Stub
     }
 
     @GuardedBy("this")
-    private final boolean attachApplicationLocked(IApplicationThread thread,
+    private boolean attachApplicationLocked(@NonNull IApplicationThread thread,
             int pid, int callingUid, long startSeq) {
 
         // Find the application record that is being attached...  either via
@@ -5087,6 +5174,9 @@ public class ActivityManagerService extends IActivityManager.Stub
 
     @Override
     public final void attachApplication(IApplicationThread thread, long startSeq) {
+        if (thread == null) {
+            throw new SecurityException("Invalid application interface");
+        }
         synchronized (this) {
             int callingPid = Binder.getCallingPid();
             final int callingUid = Binder.getCallingUid();
@@ -5169,11 +5259,14 @@ public class ActivityManagerService extends IActivityManager.Stub
 
         // Inform checkpointing systems of success
         try {
+            // This line is needed to CTS test for the correct exception handling
+            // See b/138952436#comment36 for context
+            Slog.i(TAG, "About to commit checkpoint");
             IStorageManager storageManager = PackageHelper.getStorageManager();
             storageManager.commitChanges();
         } catch (Exception e) {
             PowerManager pm = (PowerManager)
-                     mInjector.getContext().getSystemService(Context.POWER_SERVICE);
+                     mContext.getSystemService(Context.POWER_SERVICE);
             pm.reboot("Checkpoint commit failed");
         }
 
@@ -8381,32 +8474,6 @@ public class ActivityManagerService extends IActivityManager.Stub
         }
     }
 
-    void setRunningRemoteAnimation(int pid, boolean runningRemoteAnimation) {
-        if (pid == Process.myPid()) {
-            Slog.wtf(TAG, "system can't run remote animation");
-            return;
-        }
-        synchronized (ActivityManagerService.this) {
-            final ProcessRecord pr;
-            synchronized (mPidsSelfLocked) {
-                pr = mPidsSelfLocked.get(pid);
-                if (pr == null) {
-                    Slog.w(TAG, "setRunningRemoteAnimation called on unknown pid: " + pid);
-                    return;
-                }
-            }
-            if (pr.runningRemoteAnimation == runningRemoteAnimation) {
-                return;
-            }
-            pr.runningRemoteAnimation = runningRemoteAnimation;
-            if (DEBUG_OOM_ADJ) {
-                Slog.i(TAG, "Setting runningRemoteAnimation=" + pr.runningRemoteAnimation
-                        + " for pid=" + pid);
-            }
-            updateOomAdjLocked(pr, true, OomAdjuster.OOM_ADJ_REASON_UI_VISIBILITY);
-        }
-    }
-
     public final void enterSafeMode() {
         synchronized(this) {
             // It only makes sense to do this before the system is ready
@@ -8845,6 +8912,12 @@ public class ActivityManagerService extends IActivityManager.Stub
                 NETWORK_ACCESS_TIMEOUT_MS, NETWORK_ACCESS_TIMEOUT_DEFAULT_MS);
         mHiddenApiBlacklist.registerObserver();
 
+        final long pssDeferralMs = DeviceConfig.getLong(DeviceConfig.NAMESPACE_ACTIVITY_MANAGER,
+                ACTIVITY_START_PSS_DEFER_CONFIG, 0L);
+        DeviceConfig.addOnPropertiesChangedListener(DeviceConfig.NAMESPACE_ACTIVITY_MANAGER,
+                ActivityThread.currentApplication().getMainExecutor(),
+                mPssDelayConfigListener);
+
         synchronized (this) {
             mDebugApp = mOrigDebugApp = debugApp;
             mWaitForDebugger = mOrigWaitForDebugger = waitForDebugger;
@@ -8861,6 +8934,7 @@ public class ActivityManagerService extends IActivityManager.Stub
                     com.android.internal.R.bool.config_multiuserDelayUserDataLocking);
 
             mWaitForNetworkTimeoutMs = waitForNetworkTimeoutMs;
+            mPssDeferralTime = pssDeferralMs;
         }
     }
 
@@ -8923,6 +8997,7 @@ public class ActivityManagerService extends IActivityManager.Stub
         EventLog.writeEvent(EventLogTags.BOOT_PROGRESS_AMS_READY, SystemClock.uptimeMillis());
 
         mAtmInternal.updateTopComponentForFactoryTest();
+        mAtmInternal.getLaunchObserverRegistry().registerLaunchObserver(mActivityLaunchObserver);
 
         watchDeviceProvisioning(mContext);
 
@@ -8955,7 +9030,16 @@ public class ActivityManagerService extends IActivityManager.Stub
                 Integer.toString(currentUserId), currentUserId);
         mBatteryStatsService.noteEvent(BatteryStats.HistoryItem.EVENT_USER_FOREGROUND_START,
                 Integer.toString(currentUserId), currentUserId);
-        mSystemServiceManager.startUser(currentUserId);
+
+        // On Automotive, at this point the system user has already been started and unlocked,
+        // and some of the tasks we do here have already been done. So skip those in that case.
+        // TODO(b/132262830): this workdound shouldn't be necessary once we move the
+        // headless-user start logic to UserManager-land
+        final boolean bootingSystemUser = currentUserId == UserHandle.USER_SYSTEM;
+
+        if (bootingSystemUser) {
+            mSystemServiceManager.startUser(currentUserId);
+        }
 
         synchronized (this) {
             // Only start up encryption-aware persistent apps; once user is
@@ -8979,43 +9063,53 @@ public class ActivityManagerService extends IActivityManager.Stub
                     throw e.rethrowAsRuntimeException();
                 }
             }
-            mAtmInternal.startHomeOnAllDisplays(currentUserId, "systemReady");
+
+            if (bootingSystemUser) {
+                mAtmInternal.startHomeOnAllDisplays(currentUserId, "systemReady");
+            }
 
             mAtmInternal.showSystemReadyErrorDialogsIfNeeded();
 
-            final int callingUid = Binder.getCallingUid();
-            final int callingPid = Binder.getCallingPid();
-            long ident = Binder.clearCallingIdentity();
-            try {
-                Intent intent = new Intent(Intent.ACTION_USER_STARTED);
-                intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY
-                        | Intent.FLAG_RECEIVER_FOREGROUND);
-                intent.putExtra(Intent.EXTRA_USER_HANDLE, currentUserId);
-                broadcastIntentLocked(null, null, intent,
-                        null, null, 0, null, null, null, OP_NONE,
-                        null, false, false, MY_PID, SYSTEM_UID, callingUid, callingPid,
-                        currentUserId);
-                intent = new Intent(Intent.ACTION_USER_STARTING);
-                intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY);
-                intent.putExtra(Intent.EXTRA_USER_HANDLE, currentUserId);
-                broadcastIntentLocked(null, null, intent,
-                        null, new IIntentReceiver.Stub() {
-                            @Override
-                            public void performReceive(Intent intent, int resultCode, String data,
-                                    Bundle extras, boolean ordered, boolean sticky, int sendingUser)
-                                    throws RemoteException {
-                            }
-                        }, 0, null, null,
-                        new String[] {INTERACT_ACROSS_USERS}, OP_NONE,
-                        null, true, false, MY_PID, SYSTEM_UID, callingUid, callingPid,
-                        UserHandle.USER_ALL);
-            } catch (Throwable t) {
-                Slog.wtf(TAG, "Failed sending first user broadcasts", t);
-            } finally {
-                Binder.restoreCallingIdentity(ident);
+            if (bootingSystemUser) {
+                final int callingUid = Binder.getCallingUid();
+                final int callingPid = Binder.getCallingPid();
+                long ident = Binder.clearCallingIdentity();
+                try {
+                    Intent intent = new Intent(Intent.ACTION_USER_STARTED);
+                    intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY
+                            | Intent.FLAG_RECEIVER_FOREGROUND);
+                    intent.putExtra(Intent.EXTRA_USER_HANDLE, currentUserId);
+                    broadcastIntentLocked(null, null, intent,
+                            null, null, 0, null, null, null, OP_NONE,
+                            null, false, false, MY_PID, SYSTEM_UID, callingUid, callingPid,
+                            currentUserId);
+                    intent = new Intent(Intent.ACTION_USER_STARTING);
+                    intent.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY);
+                    intent.putExtra(Intent.EXTRA_USER_HANDLE, currentUserId);
+                    broadcastIntentLocked(null, null, intent,
+                            null, new IIntentReceiver.Stub() {
+                                @Override
+                                public void performReceive(Intent intent, int resultCode, String data,
+                                        Bundle extras, boolean ordered, boolean sticky, int sendingUser)
+                                        throws RemoteException {
+                                }
+                            }, 0, null, null,
+                            new String[] {INTERACT_ACROSS_USERS}, OP_NONE,
+                            null, true, false, MY_PID, SYSTEM_UID, callingUid, callingPid,
+                            UserHandle.USER_ALL);
+                } catch (Throwable t) {
+                    Slog.wtf(TAG, "Failed sending first user broadcasts", t);
+                } finally {
+                    Binder.restoreCallingIdentity(ident);
+                }
+            } else {
+                Slog.i(TAG, "Not sending multi-user broadcasts for non-system user "
+                        + currentUserId);
             }
             mAtmInternal.resumeTopActivities(false /* scheduleIdle */);
-            mUserController.sendUserSwitchBroadcasts(-1, currentUserId);
+            if (bootingSystemUser) {
+                mUserController.sendUserSwitchBroadcasts(-1, currentUserId);
+            }
 
             BinderInternal.nSetBinderProxyCountWatermarks(BINDER_PROXY_HIGH_WATERMARK,
                     BINDER_PROXY_LOW_WATERMARK);
@@ -14907,7 +15001,12 @@ public class ActivityManagerService extends IActivityManager.Stub
                             final int uid = getUidFromIntent(intent);
                             if (uid >= 0) {
                                 mBatteryStatsService.removeUid(uid);
-                                mAppOpsService.uidRemoved(uid);
+                                if (intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)) {
+                                    mAppOpsService.resetAllModes(UserHandle.getUserId(uid),
+                                            intent.getStringExtra(Intent.EXTRA_PACKAGE_NAME));
+                                } else {
+                                    mAppOpsService.uidRemoved(uid);
+                                }
                             }
                             break;
                         case Intent.ACTION_EXTERNAL_APPLICATIONS_UNAVAILABLE:
@@ -16146,13 +16245,43 @@ public class ActivityManagerService extends IActivityManager.Stub
             return false;
         }
         if (mPendingPssProcesses.size() == 0) {
-            mBgHandler.sendEmptyMessage(COLLECT_PSS_BG_MSG);
+            final long deferral = (mPssDeferralTime > 0 && mActivityStartingNesting.get() > 0)
+                    ? mPssDeferralTime : 0;
+            if (DEBUG_PSS && deferral > 0) {
+                Slog.d(TAG_PSS, "requestPssLocked() deferring PSS request by "
+                        + deferral + " ms");
+            }
+            mBgHandler.sendEmptyMessageDelayed(COLLECT_PSS_BG_MSG, deferral);
         }
         if (DEBUG_PSS) Slog.d(TAG_PSS, "Requesting pss of: " + proc);
         proc.pssProcState = procState;
         proc.pssStatType = ProcessStats.ADD_PSS_INTERNAL_SINGLE;
         mPendingPssProcesses.add(proc);
         return true;
+    }
+
+    /**
+     * Re-defer a posted PSS collection pass, if one exists.  Assumes deferral is
+     * currently active policy when called.
+     */
+    private void deferPssIfNeededLocked() {
+        if (mPendingPssProcesses.size() > 0) {
+            mBgHandler.removeMessages(COLLECT_PSS_BG_MSG);
+            mBgHandler.sendEmptyMessageDelayed(COLLECT_PSS_BG_MSG, mPssDeferralTime);
+        }
+    }
+
+    private void deferPssForActivityStart() {
+        synchronized (ActivityManagerService.this) {
+            if (mPssDeferralTime > 0) {
+                if (DEBUG_PSS) {
+                    Slog.d(TAG_PSS, "Deferring PSS collection for activity start");
+                }
+                deferPssIfNeededLocked();
+                mActivityStartingNesting.getAndIncrement();
+                mBgHandler.sendEmptyMessageDelayed(STOP_DEFERRING_PSS_MSG, mPssDeferralTime);
+            }
+        }
     }
 
     /**
@@ -17847,11 +17976,6 @@ public class ActivityManagerService extends IActivityManager.Stub
         }
 
         @Override
-        public void setRunningRemoteAnimation(int pid, boolean runningRemoteAnimation) {
-            ActivityManagerService.this.setRunningRemoteAnimation(pid, runningRemoteAnimation);
-        }
-
-        @Override
         public List<ProcessMemoryState> getMemoryStateForProcesses() {
             List<ProcessMemoryState> processMemoryStates = new ArrayList<>();
             synchronized (mPidsSelfLocked) {
@@ -17878,7 +18002,7 @@ public class ActivityManagerService extends IActivityManager.Stub
 
         @Override
         public int getCurrentUserId() {
-            return mUserController.getCurrentUserIdLU();
+            return mUserController.getCurrentUserId();
         }
 
         @Override

@@ -17,14 +17,14 @@
 package com.android.systemui.statusbar.phone
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.hardware.biometrics.BiometricSourceType
-import android.hardware.face.FaceManager
 import android.provider.Settings
-import com.android.keyguard.KeyguardUpdateMonitor
 import com.android.systemui.plugins.statusbar.StatusBarStateController
 import com.android.systemui.statusbar.NotificationLockscreenUserManager
 import com.android.systemui.statusbar.StatusBarState
 import com.android.systemui.tuner.TunerService
+import java.io.PrintWriter
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -33,6 +33,7 @@ class KeyguardBypassController {
 
     private val unlockMethodCache: UnlockMethodCache
     private val statusBarStateController: StatusBarStateController
+    private var hasFaceFeature: Boolean
 
     /**
      * The pending unlock type which is set if the bypass was blocked when it happened.
@@ -46,7 +47,7 @@ class KeyguardBypassController {
      * If face unlock dismisses the lock screen or keeps user on keyguard for the current user.
      */
     var bypassEnabled: Boolean = false
-        get() = field && unlockMethodCache.isUnlockingWithFacePossible
+        get() = field && unlockMethodCache.isFaceAuthEnabled
         private set
 
     var bouncerShowing: Boolean = false
@@ -61,33 +62,33 @@ class KeyguardBypassController {
         }
 
     @Inject
-    constructor(context: Context, tunerService: TunerService,
-                statusBarStateController: StatusBarStateController,
-                lockscreenUserManager: NotificationLockscreenUserManager) {
+    constructor(
+        context: Context,
+        tunerService: TunerService,
+        statusBarStateController: StatusBarStateController,
+        lockscreenUserManager: NotificationLockscreenUserManager
+    ) {
         unlockMethodCache = UnlockMethodCache.getInstance(context)
         this.statusBarStateController = statusBarStateController
-        statusBarStateController.addCallback(object : StatusBarStateController.StateListener {
-            override fun onStateChanged(newState: Int) {
-                if (newState != StatusBarState.KEYGUARD) {
-                    pendingUnlockType = null;
-                }
-            }
-        })
-        val faceManager = context.getSystemService(FaceManager::class.java)
-        if (faceManager?.isHardwareDetected != true) {
+
+        hasFaceFeature = context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_FACE)
+        if (!hasFaceFeature) {
             return
         }
 
+        statusBarStateController.addCallback(object : StatusBarStateController.StateListener {
+            override fun onStateChanged(newState: Int) {
+                if (newState != StatusBarState.KEYGUARD) {
+                    pendingUnlockType = null
+                }
+            }
+        })
+
         val dismissByDefault = if (context.resources.getBoolean(
-                com.android.internal.R.bool.config_faceAuthDismissesKeyguard)) 1 else 0
-        tunerService.addTunable(
-                object : TunerService.Tunable {
-                        override fun onTuningChanged(key: String?, newValue: String?) {
-                                bypassEnabled = Settings.Secure.getIntForUser(
-                                        context.contentResolver,
-                                        Settings.Secure.FACE_UNLOCK_DISMISSES_KEYGUARD,
-                                        dismissByDefault,
-                                        KeyguardUpdateMonitor.getCurrentUser()) != 0
+                        com.android.internal.R.bool.config_faceAuthDismissesKeyguard)) 1 else 0
+        tunerService.addTunable(object : TunerService.Tunable {
+            override fun onTuningChanged(key: String?, newValue: String?) {
+                bypassEnabled = tunerService.getValue(key, dismissByDefault) != 0
             }
         }, Settings.Secure.FACE_UNLOCK_DISMISSES_KEYGUARD)
         lockscreenUserManager.addUserChangedListener { pendingUnlockType = null }
@@ -100,23 +101,11 @@ class KeyguardBypassController {
      */
     fun onBiometricAuthenticated(biometricSourceType: BiometricSourceType): Boolean {
         if (bypassEnabled) {
-            if (bouncerShowing) {
-                // Whenever the bouncer is showing, we want to unlock. Otherwise we can get stuck
-                // in the shade locked where the bouncer wouldn't unlock
-                return true
-            }
-            if (statusBarStateController.state != StatusBarState.KEYGUARD) {
-                // We're bypassing but not actually on the lockscreen, the user should decide when
-                // to unlock
-                return false
-            }
-            if (launchingAffordance) {
-                return false
-            }
-            if (isPulseExpanding || qSExpanded) {
+            val can = canBypass()
+            if (!can && (isPulseExpanding || qSExpanded)) {
                 pendingUnlockType = biometricSourceType
-                return false
             }
+            return can
         }
         return true
     }
@@ -130,7 +119,53 @@ class KeyguardBypassController {
         }
     }
 
+    /**
+     * If keyguard can be dismissed because of bypass.
+     */
+    fun canBypass(): Boolean {
+        if (bypassEnabled) {
+            return when {
+                bouncerShowing -> true
+                statusBarStateController.state != StatusBarState.KEYGUARD -> false
+                launchingAffordance -> false
+                isPulseExpanding || qSExpanded -> false
+                else -> true
+            }
+        }
+        return false
+    }
+
+    /**
+     * If shorter animations should be played when unlocking.
+     */
+    fun canPlaySubtleWindowAnimations(): Boolean {
+        if (bypassEnabled) {
+            return when {
+                statusBarStateController.state != StatusBarState.KEYGUARD -> false
+                qSExpanded -> false
+                else -> true
+            }
+        }
+        return false
+    }
+
     fun onStartedGoingToSleep() {
         pendingUnlockType = null
+    }
+
+    fun dump(pw: PrintWriter) {
+        pw.println("KeyguardBypassController:")
+        pw.print("  pendingUnlockType: "); pw.println(pendingUnlockType)
+        pw.print("  bypassEnabled: "); pw.println(bypassEnabled)
+        pw.print("  canBypass: "); pw.println(canBypass())
+        pw.print("  bouncerShowing: "); pw.println(bouncerShowing)
+        pw.print("  isPulseExpanding: "); pw.println(isPulseExpanding)
+        pw.print("  launchingAffordance: "); pw.println(launchingAffordance)
+        pw.print("  qSExpanded: "); pw.println(qSExpanded)
+        pw.print("  hasFaceFeature: "); pw.println(hasFaceFeature)
+    }
+
+    companion object {
+        const val BYPASS_PANEL_FADE_DURATION = 67
     }
 }

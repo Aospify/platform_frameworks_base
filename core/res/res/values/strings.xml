@@ -187,6 +187,9 @@
     <string name="notification_channel_wfc">Wi-Fi calling</string>
     <!-- Telephony notification channel name for a channel containing SIM notifications -->
     <string name="notification_channel_sim">SIM status</string>
+    <!-- Telephony notification channel name for a channel containing high priority SIM notifications -->
+    <string name="notification_channel_sim_high_prio">High priority SIM status</string>
+
 
     <!-- Displayed to tell the user that peer changed TTY mode -->
     <string name="peerTtyModeFull">Peer requested TTY Mode FULL</string>
@@ -1032,47 +1035,26 @@
     <!-- Title of an application permission, listed so the user can choose whether they want to allow the application to do this. -->
     <string name="permlab_readContacts">read your contacts</string>
     <!-- Description of an application permission, listed so the user can choose whether they want to allow the application to do this. -->
-    <string name="permdesc_readContacts" product="tablet">Allows the app to read
-      data about your contacts stored on your tablet, including the frequency
-      with which you\'ve called, emailed, or communicated in other ways with
-      specific individuals. This permission allows apps to save your contact
-      data, and malicious apps may share contact data without your
-      knowledge.</string>
+    <string name="permdesc_readContacts" product="tablet">Allows the app to read data about your contacts stored on your tablet.
+      This permission allows apps to save your contact data, and malicious apps may share contact data without your knowledge.</string>
     <!-- Description of an application permission, listed so the user can choose whether they want to allow the application to do this. -->
-    <string name="permdesc_readContacts" product="tv">Allows the app to read
-      data about your contacts stored on your TV, including the frequency
-      with which you\'ve called, emailed, or communicated in other ways with
-      specific individuals. This permission allows apps to save your contact
-      data, and malicious apps may share contact data without your
-      knowledge.</string>
+    <string name="permdesc_readContacts" product="tv">Allows the app to read data about your contacts stored on your TV.
+      This permission allows apps to save your contact data, and malicious apps may share contact data without your knowledge.</string>
     <!-- Description of an application permission, listed so the user can choose whether they want to allow the application to do this. -->
-    <string name="permdesc_readContacts" product="default">Allows the app to
-      read data about your contacts stored on your phone, including the
-      frequency with which you\'ve called, emailed, or communicated in other ways
-      with specific individuals. This permission allows apps to save your
-      contact data, and malicious apps may share contact data without your
-      knowledge.</string>
+    <string name="permdesc_readContacts" product="default">Allows the app to read data about your contacts stored on your phone.
+      This permission allows apps to save your contact data, and malicious apps may share contact data without your knowledge.</string>
 
     <!-- Title of an application permission, listed so the user can choose whether they want to allow the application to do this. -->
     <string name="permlab_writeContacts">modify your contacts</string>
     <!-- Description of an application permission, listed so the user can choose whether they want to allow the application to do this. -->
-    <string name="permdesc_writeContacts" product="tablet">Allows the app to
-      modify the data about your contacts stored on your tablet, including the
-      frequency with which you\'ve called, emailed, or communicated in other ways
-      with specific contacts. This permission allows apps to delete contact
-      data.</string>
+    <string name="permdesc_writeContacts" product="tablet">Allows the app to modify the data about your contacts stored on your tablet.
+      This permission allows apps to delete contact data.</string>
     <!-- Description of an application permission, listed so the user can choose whether they want to allow the application to do this. -->
-    <string name="permdesc_writeContacts" product="tv">Allows the app to
-      modify the data about your contacts stored on your TV, including the
-      frequency with which you\'ve called, emailed, or communicated in other ways
-      with specific contacts. This permission allows apps to delete contact
-      data.</string>
+    <string name="permdesc_writeContacts" product="tv">Allows the app to modify the data about your contacts stored on your TV.
+      This permission allows apps to delete contact data.</string>
     <!-- Description of an application permission, listed so the user can choose whether they want to allow the application to do this. -->
-    <string name="permdesc_writeContacts" product="default">Allows the app to
-    modify the data about your contacts stored on your phone, including the
-    frequency with which you\'ve called, emailed, or communicated in other ways
-    with specific contacts. This permission allows apps to delete contact
-    data.</string>
+    <string name="permdesc_writeContacts" product="default">Allows the app to modify the data about your contacts stored on your phone.
+      This permission allows apps to delete contact data.</string>
 
     <!-- Title of an application permission, listed so the user can choose whether they want to allow the application to do this. -->
     <string name="permlab_readCallLog">read call log</string>
@@ -1134,6 +1116,8 @@
     <string name="permdesc_accessCoarseLocation" product="tablet">This app can get your location based on network sources such as cell towers and Wi-Fi networks, but only when when the app is in the foreground. These location services must be turned on and available on your tablet for the app to be able to use them.</string>
     <!-- Description of an application permission, listed so the user can choose whether they want to allow the application to do this. -->
     <string name="permdesc_accessCoarseLocation" product="tv">This app can get your location based on network sources such as cell towers and Wi-Fi networks, but only when when the app is in the foreground. These location services must be turned on and available on your TV for the app to be able to use them.</string>
+    <!-- Description of an application permission, listed so the user can choose whether they want to allow the application to do this. -->
+    <string name="permdesc_accessCoarseLocation" product="automotive">This app can get your approximate location only when it is in the foreground. These location services must be turned on and available on your car for the app to be able to use them.</string>
     <!-- Description of an application permission, listed so the user can choose whether they want to allow the application to do this. -->
     <string name="permdesc_accessCoarseLocation" product="default">This app can get your location based on network sources such as cell towers and Wi-Fi networks, but only when the app is in the foreground. These location services must be turned on and available on your phone for the app to be able to use them.</string>
 
@@ -1538,7 +1522,7 @@
     <!-- Message shown during face acquisition when the user is not front facing the sensor [CHAR LIMIT=50] -->
     <string name="face_acquired_poor_gaze">Please look more directly at your device.</string>
     <!-- Message shown during face acquisition when the user is not detected [CHAR LIMIT=50] -->
-    <string name="face_acquired_not_detected">Can\u2019t see your face. Look at the phone.</string>
+    <string name="face_acquired_not_detected">Position your face directly in front of the phone.</string>
     <!-- Message shown during face acquisition when the device is not steady [CHAR LIMIT=50] -->
     <string name="face_acquired_too_much_motion">Too much motion. Hold phone steady.</string>
     <!-- Message shown during face acquisition when the sensor needs to be recalibrated [CHAR LIMIT=50] -->
@@ -3074,12 +3058,20 @@
     <string name="whichViewApplicationNamed">Open with %1$s</string>
     <!-- Label for a link to a intent resolver dialog to view something -->
     <string name="whichViewApplicationLabel">Open</string>
-    <!-- Title of intent resolver dialog when selecting a viewer application that opens URI
+    <!-- Title of intent resolver dialog when selecting a browser/application that opens specific URIs
          [CHAR LIMIT=128]. -->
-    <string name="whichGiveAccessToApplication">Give access to open <xliff:g id="host" example="mail.google.com">%1$s</xliff:g> links with</string>
+    <string name="whichOpenHostLinksWith">Open <xliff:g id="host" example="mail.google.com">%1$s</xliff:g> links with</string>
+    <!-- Title of intent resolver dialog when selecting a browser that opens URI
+         [CHAR LIMIT=128]. -->
+    <string name="whichOpenLinksWith">Open links with</string>
+    <!-- Title of intent resolver dialog when defaulting to a specific browser that opens URI
+         [CHAR LIMIT=128]. -->
+    <string name="whichOpenLinksWithApp">Open links with <xliff:g id="application" example="Chrome">%1$s</xliff:g></string>
+    <!-- Title of intent resolver dialog when defaulting to a specific browser that opens URI
+         [CHAR LIMIT=128]. -->
+    <string name="whichOpenHostLinksWithApp">Open <xliff:g id="host" example="mail.google.com">%1$s</xliff:g> links with <xliff:g id="application" example="Chrome">%2$s</xliff:g></string>
     <!-- Title of intent resolver dialog when selecting a viewer application that opens URI
          and a previously used application is known [CHAR LIMIT=128]. -->
-    <string name="whichGiveAccessToApplicationNamed">Give access to open <xliff:g id="host" example="mail.google.com">%1$s</xliff:g> links with <xliff:g id="application" example="Gmail">%2$s</xliff:g></string>
     <!-- Label for a link to an intent resolver dialog to open URI [CHAR LIMIT=18] -->
     <string name="whichGiveAccessToApplicationLabel">Give access</string>
     <!-- Title of intent resolver dialog when selecting an editor application to run. -->
@@ -3350,6 +3342,26 @@
     <!-- If there is ever a ringtone set for some setting, but that ringtone can no longer be resolved, t his is shown instead.  For example, if the ringtone was on a SD card and it had been removed, this woudl be shown for ringtones on that SD card. -->
     <string name="ringtone_unknown">Unknown</string>
 
+    <!-- Start of string constants used to inform the user that the current network may be failing to connect due to not supporting randomized MAC-->
+    <!-- Notification title [CHAR_LIMIT=NONE]-->
+    <string name="wifi_cannot_connect_with_randomized_mac_title">Can\u2019t connect to <xliff:g id="ssid" example="SSID_1">%1$s</xliff:g></string>
+    <!-- Notification text [CHAR_LIMIT=NONE]-->
+    <string name="wifi_cannot_connect_with_randomized_mac_message">Tap to change privacy settings and retry</string>
+    <!-- Title of the dialog which pops up when the notification is tapped. [CHAR_LIMIT=NONE]-->
+    <string name="wifi_disable_mac_randomization_dialog_title">Change privacy setting?</string>
+    <!-- Dialog text [CHAR_LIMIT=NONE]-->
+    <string name="wifi_disable_mac_randomization_dialog_message"><xliff:g id="ssid" example="SSID_1">%1$s</xliff:g> may want to connect using your device MAC address, a unique identifier. This may allow your device\u2019s location to be tracked by nearby devices.
+        \n\nIf you continue, <xliff:g id="ssid" example="SSID_1">%1$s</xliff:g> will change your privacy setting and try to connect again.</string>
+    <!-- Text of the button that will disable MAC randomization for the network when tapped. [CHAR_LIMIT=NONE]-->
+    <string name="wifi_disable_mac_randomization_dialog_confirm_text">Change setting</string>
+    <!-- Toast message which shows up after MAC randomization for the network is disabled. [CHAR_LIMIT=NONE]-->
+    <string name="wifi_disable_mac_randomization_dialog_success">Setting updated. Try connecting again.</string>
+    <!-- Toast message which shows up if the operation failed. [CHAR_LIMIT=NONE]-->
+    <string name="wifi_disable_mac_randomization_dialog_failure">Can\u2019t change privacy setting</string>
+    <!-- Toast message which shows up if the network no longer exists on the device. [CHAR_LIMIT=NONE]-->
+    <string name="wifi_disable_mac_randomization_dialog_network_not_found">Network not found</string>
+    <!-- End of string constants used to inform the user that the current network may be failing to connect due to not supporting randomized MAC-->
+
     <!-- A notification is shown when there are open wireless networks nearby.  This is the notification's title. -->
     <plurals name="wifi_available">
         <item quantity="one">Wi-Fi network available</item>
@@ -3379,13 +3391,13 @@
     <string name="wifi_available_action_all_networks">All networks</string>
 
     <!-- Notification title for a connection to a app suggested wireless network.-->
-    <string name="wifi_suggestion_title">Connect to Wi\u2011Fi networks?</string>
+    <string name="wifi_suggestion_title">Allow suggested Wi\u2011Fi networks?</string>
     <!-- Notification content for a connection to a app suggested wireless network.-->
-    <string name="wifi_suggestion_content">Suggested by <xliff:g id="name" example="App123">%s</xliff:g></string>
+    <string name="wifi_suggestion_content"><xliff:g id="name" example="App123">%s</xliff:g> suggested networks. Device may connect automatically. </string>
     <!-- Notification action for allowing app specified in the notification body.-->
-    <string name="wifi_suggestion_action_allow_app">Yes</string>
+    <string name="wifi_suggestion_action_allow_app">Allow</string>
     <!-- Notification action for disallowing app specified in the notification body.-->
-    <string name="wifi_suggestion_action_disallow_app">No</string>
+    <string name="wifi_suggestion_action_disallow_app">No thanks</string>
 
     <!--Notification title for Wi-Fi Wake onboarding. This is displayed the first time a user disables Wi-Fi with the feature enabled. -->
     <string name="wifi_wakeup_onboarding_title">Wi\u2011Fi will turn on automatically</string>
@@ -4212,6 +4224,10 @@
     <string name="activity_resolver_use_always">Always</string>
 
     <!-- Title for a button to choose the currently selected activity
+         as the default in the activity resolver. [CHAR LIMIT=50] -->
+    <string name="activity_resolver_set_always">Set to always open</string>
+
+    <!-- Title for a button to choose the currently selected activity
          from the activity resolver to use just this once. [CHAR LIMIT=25] -->
     <string name="activity_resolver_use_once">Just once</string>
 
@@ -4824,10 +4840,10 @@
     <string name="confirm_battery_saver">OK</string>
 
     <!-- [CHAR_LIMIT=NONE] Battery saver: Feature description, with a "learn more" link. -->
-    <string name="battery_saver_description_with_learn_more">Battery Saver turns off or restricts background activity, some visual effects \u0026 other high-power features to extend battery life. <annotation id="url">Learn More</annotation></string>
+    <string name="battery_saver_description_with_learn_more">To extend battery life, Battery Saver:\n&#183;Turns on Dark theme\n&#183;Turns off or restricts background activity, some visual effects, and other features like \u201cHey Google\u201d\n\n<annotation id="url">Learn more</annotation></string>
 
     <!-- [CHAR_LIMIT=NONE] Battery saver: Feature description, without a "learn more" link. -->
-    <string name="battery_saver_description">Battery Saver turns off or restricts background activity, some visual effects \u0026 other high-power features to extend battery life.</string>
+    <string name="battery_saver_description">To extend battery life, Battery Saver:\n&#183;Turns on Dark theme\n&#183;Turns off or restricts background activity, some visual effects, and other features like \u201cHey Google\u201d</string>
 
     <!-- [CHAR_LIMIT=NONE] Data saver: Feature description -->
     <string name="data_saver_description">To help reduce data usage, Data Saver prevents some apps from sending or receiving data in the background. An app you’re currently using can access data, but may do so less frequently. This may mean, for example, that images don’t display until you tap them.</string>
@@ -4994,9 +5010,9 @@
     <string name="importance_from_person">This is important because of the people involved.</string>
 
     <!-- Message to user that app trying to create user for an account that already exists. [CHAR LIMIT=none] -->
-    <string name="user_creation_account_exists">Allow <xliff:g id="app" example="Gmail">%1$s</xliff:g> to create a new User with <xliff:g id="account" example="foobar@gmail.com">%2$s</xliff:g> ?</string>
+    <string name="user_creation_account_exists">Allow <xliff:g id="app" example="Gmail">%1$s</xliff:g> to create a new User with <xliff:g id="account" example="foobar@gmail.com">%2$s</xliff:g> (a User with this account already exists) ?</string>
     <!-- Message to user that app is trying to create user for a specified account. [CHAR LIMIT=none] -->
-    <string name="user_creation_adding">Allow <xliff:g id="app" example="Gmail">%1$s</xliff:g> to create a new User with <xliff:g id="account" example="foobar">%2$s</xliff:g> (a User with this account already exists) ?</string>
+    <string name="user_creation_adding">Allow <xliff:g id="app" example="Gmail">%1$s</xliff:g> to create a new User with <xliff:g id="account" example="foobar@gmail.com">%2$s</xliff:g> ?</string>
 
     <!-- Locale picker strings -->
 
@@ -5057,6 +5073,10 @@
     <string name="usb_mtp_launch_notification_description">Tap to view files</string>
 
     <!-- Resolver target actions strings -->
+    <!-- Pin this app to the top of the Sharesheet app list. [CHAR LIMIT=60]-->
+    <string name="pin_target">Pin</string>
+    <!-- Un-pin this app in the Sharesheet, so that it is sorted normally. [CHAR LIMIT=60]-->
+    <string name="unpin_target">Unpin</string>
     <!-- View application info for a target. -->
     <string name="app_info">App info</string>
 
