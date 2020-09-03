@@ -57,10 +57,8 @@ public final class AppCompactor {
 
     // Flags stored in the DeviceConfig API.
     @VisibleForTesting static final String KEY_USE_COMPACTION = "use_compaction";
-    @VisibleForTesting static final String KEY_USE_ANON_ONLY_COMPACTION = "use_anon_only_compaction";
     @VisibleForTesting static final String KEY_COMPACT_ACTION_1 = "compact_action_1";
     @VisibleForTesting static final String KEY_COMPACT_ACTION_2 = "compact_action_2";
-    @VisibleForTesting static final String KEY_COMPACT_ACTION_3 = "compact_action_3";
     @VisibleForTesting static final String KEY_COMPACT_THROTTLE_1 = "compact_throttle_1";
     @VisibleForTesting static final String KEY_COMPACT_THROTTLE_2 = "compact_throttle_2";
     @VisibleForTesting static final String KEY_COMPACT_THROTTLE_3 = "compact_throttle_3";
@@ -89,13 +87,11 @@ public final class AppCompactor {
 
     private static boolean isLowRAM = false;
     private static boolean isAppCompactionEnable = false;
-    private static boolean useAnonCompaction = false;
 
     // Defaults for phenotype flags.
     @VisibleForTesting static Boolean DEFAULT_USE_COMPACTION = false;
     @VisibleForTesting static final int DEFAULT_COMPACT_ACTION_1 = COMPACT_ACTION_FILE_FLAG;
     @VisibleForTesting static final int DEFAULT_COMPACT_ACTION_2 = COMPACT_ACTION_FULL_FLAG;
-    @VisibleForTesting static final int DEFAULT_COMPACT_ACTION_3 = COMPACT_ACTION_ANON_FLAG;
     @VisibleForTesting static final long DEFAULT_COMPACT_THROTTLE_1 = 5_000;
     @VisibleForTesting static final long DEFAULT_COMPACT_THROTTLE_2 = 10_000;
     @VisibleForTesting static final long DEFAULT_COMPACT_THROTTLE_3 = 500;
@@ -179,9 +175,6 @@ public final class AppCompactor {
     @VisibleForTesting volatile String mCompactActionFull =
             compactActionIntToString(DEFAULT_COMPACT_ACTION_2);
     @GuardedBy("mPhenotypeFlagLock")
-    @VisibleForTesting volatile String mCompactActionAnon =
-            compactActionIntToString(DEFAULT_COMPACT_ACTION_3);
-    @GuardedBy("mPhenotypeFlagLock")
     @VisibleForTesting volatile long mCompactThrottleSomeSome = DEFAULT_COMPACT_THROTTLE_1;
     @GuardedBy("mPhenotypeFlagLock")
     @VisibleForTesting volatile long mCompactThrottleSomeFull = DEFAULT_COMPACT_THROTTLE_2;
@@ -235,9 +228,6 @@ public final class AppCompactor {
         isLowRAM = SystemProperties.getBoolean("ro.config.low_ram", false);
         if(mPerf != null) {
             isAppCompactionEnable = Boolean.parseBoolean(mPerf.perfGetProp("ro.vendor.qti.am.enable_appcompaction", "false"));
-            // Retaining file caches will lower the overall launch latencies as they could be shared across multiple
-            // process.  So let only anon caches be dropped to avoid affecting other apps
-            useAnonCompaction = Boolean.parseBoolean(mPerf.perfGetProp("ro.vendor.qti.am.compact_only_anon", "false"));
         }
 
         if (isLowRAM == true || isAppCompactionEnable == true)
@@ -284,10 +274,8 @@ public final class AppCompactor {
         pw.println("AppCompactor settings");
         synchronized (mPhenotypeFlagLock) {
             pw.println("  " + KEY_USE_COMPACTION + "=" + mUseCompaction);
-            pw.println("  " + KEY_USE_ANON_ONLY_COMPACTION + "=" + useAnonCompaction);
             pw.println("  " + KEY_COMPACT_ACTION_1 + "=" + mCompactActionSome);
             pw.println("  " + KEY_COMPACT_ACTION_2 + "=" + mCompactActionFull);
-            pw.println("  " + KEY_COMPACT_ACTION_3 + "=" + mCompactActionAnon);
             pw.println("  " + KEY_COMPACT_THROTTLE_1 + "=" + mCompactThrottleSomeSome);
             pw.println("  " + KEY_COMPACT_THROTTLE_2 + "=" + mCompactThrottleSomeFull);
             pw.println("  " + KEY_COMPACT_THROTTLE_3 + "=" + mCompactThrottleFullSome);
@@ -401,12 +389,8 @@ public final class AppCompactor {
         int compactAction2 = DeviceConfig.getInt(DeviceConfig.NAMESPACE_ACTIVITY_MANAGER,
                 KEY_COMPACT_ACTION_2, DEFAULT_COMPACT_ACTION_2);
 
-        int compactAction3 = DeviceConfig.getInt(DeviceConfig.NAMESPACE_ACTIVITY_MANAGER,
-                KEY_COMPACT_ACTION_3, DEFAULT_COMPACT_ACTION_3);
-
         mCompactActionSome = compactActionIntToString(compactAction1);
         mCompactActionFull = compactActionIntToString(compactAction2);
-        mCompactActionAnon = compactActionIntToString(compactAction3);
     }
 
     @GuardedBy("mPhenotypeFlagLock")
@@ -658,21 +642,13 @@ public final class AppCompactor {
 
                     switch (pendingAction) {
                         case COMPACT_PROCESS_SOME:
-                            if (useAnonCompaction == true) {
-                                action = mCompactActionAnon;
-                            } else {
-                                action = mCompactActionSome;
-                            }
+                            action = mCompactActionSome;
                             break;
                         // For the time being, treat these as equivalent.
                         case COMPACT_PROCESS_FULL:
                         case COMPACT_PROCESS_PERSISTENT:
                         case COMPACT_PROCESS_BFGS:
-                            if (useAnonCompaction == true) {
-                                action = mCompactActionAnon;
-                            } else {
-                                action = mCompactActionFull;
-                            }
+                            action = mCompactActionFull;
                             break;
                         default:
                             action = COMPACT_ACTION_NONE;
@@ -697,7 +673,7 @@ public final class AppCompactor {
                     if (rssBefore[0] == 0 && rssBefore[1] == 0 && rssBefore[2] == 0
                             && rssBefore[3] == 0) {
                         if (DEBUG_COMPACTION) {
-                            Slog.d(TAG_AM, "Skipping compaction for process " + pid
+                            Slog.d(TAG_AM, "Skipping compaction for" + "process " + pid
                                     + " with no memory usage. Dead?");
                         }
                         return;
@@ -751,15 +727,8 @@ public final class AppCompactor {
 
                     try {
                         Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER, "Compact "
-                                + ((useAnonCompaction == true) ? "anon" :
-                                      (pendingAction == COMPACT_PROCESS_SOME) ? "some " : "full ")
-                                + " : " + name);
-                        if (DEBUG_COMPACTION) {
-                            Slog.i(TAG_AM, "Compact "
-                                + ((useAnonCompaction == true) ? "anon" :
-                                       (pendingAction == COMPACT_PROCESS_SOME) ? "some " : "full ")
-                                + " : " + name);
-                        }
+                                + ((pendingAction == COMPACT_PROCESS_SOME) ? "some" : "full")
+                                + ": " + name);
                         long zramFreeKbBefore = Debug.getZramFreeKb();
                         FileOutputStream fos = new FileOutputStream("/proc/" + pid + "/reclaim");
                         fos.write(action.getBytes());
